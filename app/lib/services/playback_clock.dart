@@ -19,6 +19,15 @@ class PlaybackClock extends ChangeNotifier {
   static const double _hardResyncSec = 0.25;
   static const double _nudgeFactor = 0.12;
 
+  /// How close an engine reading must be to a seek target before it is
+  /// believed again.
+  static const double _seekSettledSec = 0.25;
+
+  /// How many disagreeing readings to ignore before believing the engine
+  /// anyway. Without a cap, an engine that seeks somewhere else entirely would
+  /// be ignored forever and the clock would never recover.
+  static const int _maxRejectedReadings = 8;
+
   /// Largest audio/visual correction offered, in seconds.
   ///
   /// Bluetooth headsets typically sit between 100 and 250 ms behind; 300 ms
@@ -34,6 +43,8 @@ class PlaybackClock extends ChangeNotifier {
   double _rate = 1.0;
   double _duration = 0.0;
   double _visualOffset = 0.0;
+  double? _pendingSeek;
+  int _rejectedReadings = 0;
 
   /// Where the *audio* is. Transport, seeking and end-of-track all use this,
   /// so calibration cannot make the player stop early or seek to the wrong
@@ -101,11 +112,31 @@ class PlaybackClock extends ChangeNotifier {
     _anchorPosition = target;
     _anchorWall = _wallSeconds;
     _position = target;
+    // Readings already in flight describe where we *were*. Ignore them until
+    // one arrives near the target, or a loop jump gets yanked straight back to
+    // the point it just left.
+    _pendingSeek = target;
+    _rejectedReadings = 0;
     notifyListeners();
   }
 
+  /// True while a seek is still settling and engine readings are being ignored.
+  bool get isSeeking => _pendingSeek != null;
+
   /// Feed a real reading from the audio engine.
   void syncTo(double reported) {
+    final pending = _pendingSeek;
+    if (pending != null) {
+      // Only trust the engine once it has arrived at the target — but give up
+      // waiting after a few readings, in case it went somewhere else entirely.
+      if ((reported - pending).abs() > _seekSettledSec &&
+          _rejectedReadings < _maxRejectedReadings) {
+        _rejectedReadings++;
+        return;
+      }
+      _pendingSeek = null;
+      _rejectedReadings = 0;
+    }
     final error = reported - _predicted;
     if (error.abs() > _hardResyncSec) {
       _anchorPosition = reported;

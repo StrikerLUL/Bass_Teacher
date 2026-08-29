@@ -31,6 +31,7 @@ class StemPlayer {
   Player? _backing;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Timer? _driftTimer;
+  DateTime? _settlingUntil;
 
   double _bassVolume = 1.0;
   double _backingVolume = 1.0;
@@ -97,6 +98,8 @@ class StemPlayer {
     final leader = _leader;
     final follower = _follower;
     if (leader == null || follower == null || !clock.isPlaying) return;
+    final settling = _settlingUntil;
+    if (settling != null && DateTime.now().isBefore(settling)) return;
 
     final drift = leader.state.position - follower.state.position;
     if (drift.abs().inMilliseconds > _maxDriftMs) {
@@ -119,6 +122,9 @@ class StemPlayer {
   Future<void> seek(double seconds) async {
     clock.seekTo(seconds);
     final target = Duration(microseconds: (clock.position * 1e6).round());
+    // Drift correction compares the two engines; mid-seek one has moved and the
+    // other has not, so leave it alone until both have landed.
+    _settlingUntil = DateTime.now().add(const Duration(milliseconds: 400));
     await Future.wait<void>([for (final p in _players) p.seek(target)]);
   }
 

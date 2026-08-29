@@ -31,50 +31,11 @@ class TransportControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // The clock ticks every frame, so only the seek bar listens to it —
-          // the rest of the controls would repaint 60 times a second for nothing.
-          AnimatedBuilder(
-            animation: clock,
-            builder: (context, _) {
-              final duration = clock.duration;
-              return Row(
-                children: [
-                  SizedBox(
-                    width: 44,
-                    child: Text(
-                      formatTime(clock.position),
-                      style: theme.textTheme.labelMedium,
-                    ),
-                  ),
-                  Expanded(
-                    child: Slider(
-                      value: duration <= 0
-                          ? 0
-                          : clock.position.clamp(0.0, duration),
-                      max: duration <= 0 ? 1 : duration,
-                      onChanged: duration <= 0 ? null : onSeek,
-                    ),
-                  ),
-                  SizedBox(
-                    width: 44,
-                    child: Text(
-                      formatTime(duration),
-                      textAlign: TextAlign.end,
-                      style: theme.textTheme.labelMedium,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 4),
           Wrap(
             spacing: 12,
             runSpacing: 8,

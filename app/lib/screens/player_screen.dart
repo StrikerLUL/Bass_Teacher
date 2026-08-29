@@ -6,11 +6,14 @@ import '../models/note_event.dart';
 import '../models/tempo_grid.dart';
 import '../models/transcription.dart';
 import '../services/app_settings.dart';
+import '../services/loop_controller.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
 import '../widgets/beat_ruler.dart';
 import '../widgets/calibration_dialog.dart';
+import '../widgets/loop_controls.dart';
+import '../widgets/loop_seek_bar.dart';
 import '../widgets/fretboard_view.dart';
 import '../widgets/tempo_dialog.dart';
 import '../widgets/transport_controls.dart';
@@ -37,6 +40,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   Duration _lastFrame = Duration.zero;
   bool _loadingAudio = true;
   TempoGrid? _grid;
+  final LoopController _loop = LoopController();
 
   /// Identifies this track in the settings file, for a manual tempo.
   String get _trackKey => widget.transcription.sourcePath ?? widget.transcription.title;
@@ -60,9 +64,32 @@ class _PlayerScreenState extends State<PlayerScreen>
   void dispose() {
     _ticker?.dispose();
     _viewModel.dispose();
+    _loop.dispose();
     _player.dispose();
     _clock.dispose();
     super.dispose();
+  }
+
+  /// Jump back to A, carrying the overshoot so passes do not drift, and step
+  /// the ramp up.
+  void _wrapLoop() {
+    final target = _loop.wrapPosition(_clock.position);
+    _player.seek(target);
+    final rate = _loop.completePass();
+    if (_loop.ramp.enabled && (rate - _clock.rate).abs() > 0.001) {
+      _player.setRate(rate);
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _markLoopStart() {
+    _loop.markStart(_clock.position, grid: _grid);
+    setState(() {});
+  }
+
+  void _markLoopEnd() {
+    _loop.markEnd(_clock.position, grid: _grid);
+    setState(() {});
   }
 
   /// A hand-set tempo wins over the detected grid.
@@ -118,13 +145,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     _lastFrame = elapsed;
     _clock.tick();
 
-    // Stop at the end of the track. With stems loaded, media_kit's `completed`
-    // stream handles this; a transcription with no audio has no engine to
-    // report completion, so without this the clock parks on the last frame
-    // still reporting itself as playing.
-    if (_clock.isPlaying &&
+    // A–B loop. Checked before the end-of-track rule so a loop ending at the
+    // last bar keeps going instead of stopping.
+    if (_clock.isPlaying && !_clock.isSeeking && _loop.shouldWrap(_clock.position)) {
+      _wrapLoop();
+    } else if (_clock.isPlaying &&
         _clock.duration > 0 &&
         _clock.position >= _clock.duration) {
+      // Stop at the end of the track. With stems loaded, media_kit's
+      // `completed` stream handles this; a transcription with no audio has no
+      // engine to report completion, so without this the clock parks on the
+      // last frame still reporting itself as playing.
       _player.pause();
     }
 
@@ -173,6 +204,17 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (_grid != null && !_grid!.isEmpty)
             BeatRuler(grid: _grid!, clock: _clock),
           _NoteReadout(viewModel: _viewModel, grid: _grid, clock: _clock),
+          LoopSeekBar(clock: _clock, loop: _loop, onSeek: _seek),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: LoopControls(
+              loop: _loop,
+              clock: _clock,
+              onMarkStart: _markLoopStart,
+              onMarkEnd: _markLoopEnd,
+              onChanged: () => setState(() {}),
+            ),
+          ),
           TransportControls(
             clock: _clock,
             player: _player,

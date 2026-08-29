@@ -100,9 +100,23 @@ void main() {
     test('snaps on a large reading error', () {
       final clock = PlaybackClock()..duration = 100;
       clock.seekTo(5);
-      clock.syncTo(42.0); // the engine seeked out from under us
+      clock.syncTo(5.0); // let the seek settle first
+      clock.syncTo(42.0); // now the engine has moved out from under us
       clock.tick();
       expect(clock.position, closeTo(42.0, 0.01));
+    });
+
+    test('gives up ignoring readings if the engine really did move', () {
+      // The post-seek guard must not be able to wedge the clock: an engine that
+      // lands somewhere else entirely has to win eventually.
+      final clock = PlaybackClock()..duration = 100;
+      clock.seekTo(5);
+      for (var i = 0; i < 12; i++) {
+        clock.syncTo(42.0);
+      }
+      clock.tick();
+      expect(clock.position, closeTo(42.0, 0.5));
+      expect(clock.isSeeking, isFalse);
     });
 
     test('never rewinds during playback', () async {

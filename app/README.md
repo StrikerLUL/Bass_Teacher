@@ -108,6 +108,27 @@ accents on beats 1 and 5.
 Settings persist to `%APPDATA%ass_trainer\settings.json` (or
 `$XDG_CONFIG_HOME`), written directly rather than through a plugin.
 
+## A–B practice loop
+
+Mark A and B with the buttons, or drag across the lane under the seek bar. The
+loop region is shaded on the bar; the pass count and current ramp step sit with
+the controls. With a beat grid loaded, A and B snap to bar lines.
+
+Two details make repeated passes hold their timing:
+
+**The overshoot is carried, not discarded.** A frame is up to ~16 ms, so the
+wrap is always slightly past B. Restarting at A exactly would throw that away
+every pass and walk the loop out of time with the music; `wrapPosition` adds it
+back past A instead.
+
+**Readings from before a seek are ignored.** The engine keeps reporting the old
+position for a moment after a jump, and `syncTo` would treat that as a large
+error and snap straight back to B. `PlaybackClock` ignores readings until one
+lands near the target — bounded to eight, so an engine that genuinely went
+elsewhere still wins rather than wedging the clock. `StemPlayer` also pauses
+drift correction for 400 ms after a seek, since mid-seek one engine has moved
+and the other has not.
+
 ## Choices
 
 **media_kit, not just_audio.** Two stems play as independent voices so either

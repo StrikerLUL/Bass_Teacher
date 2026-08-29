@@ -128,11 +128,11 @@ tempo per track in the settings file rather than rewriting the transcription.
 
 Done: pipeline with two selectable transcription engines, fingering search and
 finger numbering (tested both sides), library screen, fretboard renderer,
-transport, mute/solo/gain, speed control, audio-visual calibration.
+transport, mute/solo/gain, speed control, audio-visual calibration, tempo and
+bar grid, A-B practice loop with a speed ramp.
 
-Not done yet: no A-B practice loop; no bar/beat grid; no microphone input; no
-tab export; two-engine stem sync is corrected on a 500 ms timer rather than
-sample-locked.
+Not done yet: no microphone input; no tab export; two-engine stem sync is
+corrected on a 500 ms timer rather than sample-locked.
 
 Never verified by ear: every check so far has been a measurement or an offline
 render. No one has confirmed the app actually sounds right.
