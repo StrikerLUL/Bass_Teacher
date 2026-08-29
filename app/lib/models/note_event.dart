@@ -10,6 +10,7 @@ class NoteEvent {
     this.string,
     this.fret,
     this.hand,
+    this.finger,
     this.octaveShift = 0,
   });
 
@@ -26,6 +27,10 @@ class NoteEvent {
 
   /// Lowest fret the surrounding phrase needs, i.e. where the hand should sit.
   int? hand;
+
+  /// Fretting finger, 1 (index) to 4 (pinky). 0 means an open string, where no
+  /// finger is used at all; null means it has not been worked out.
+  int? finger;
 
   /// Octaves the backend shifted this note by to fit the instrument's range.
   final int octaveShift;
@@ -48,6 +53,7 @@ class NoteEvent {
         string: (json['string'] as num?)?.toInt(),
         fret: (json['fret'] as num?)?.toInt(),
         hand: (json['hand'] as num?)?.toInt(),
+        finger: (json['finger'] as num?)?.toInt(),
         octaveShift: (json['octave_shift'] as num?)?.toInt() ?? 0,
       );
 

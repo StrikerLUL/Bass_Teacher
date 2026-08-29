@@ -31,6 +31,8 @@ __all__ = [
     "FingeringConfig",
     "assign_fingerings",
     "annotate_hand_positions",
+    "assign_fingers",
+    "FingerConfig",
     "fingering_stats",
     "note_name_to_midi",
     "midi_to_name",
@@ -97,6 +99,7 @@ class NoteEvent:
     string: Optional[int] = None   # filled in by assign_fingerings()
     fret: Optional[int] = None
     hand: Optional[int] = None     # filled in by annotate_hand_positions()
+    finger: Optional[int] = None   # filled in by assign_fingers(); 0 == open
 
     @property
     def duration(self) -> float:
@@ -395,6 +398,55 @@ def annotate_hand_positions(
     return list(notes)
 
 
+@dataclass(frozen=True)
+class FingerConfig:
+    """How the fretting hand covers the neck.
+
+    ``span`` fingers cover ``span`` consecutive frets, one each. ``stretch`` is
+    how far beyond that the hand will reach rather than move.
+    """
+
+    span: int = 4       # index, middle, ring, pinky
+    stretch: int = 1    # one fret either side is a reach, not a shift
+
+
+def assign_fingers(
+    notes: Sequence[NoteEvent], config: Optional[FingerConfig] = None
+) -> List[NoteEvent]:
+    """Number the fretting fingers 1-4, given the hand position of each note.
+
+    Inside the box it is one finger per fret, counting up from the index at the
+    hand position. One fret past either edge is a stretch — the pinky reaches
+    up, the index reaches back — because moving the whole hand for a single
+    note is slower than reaching for it. Anything further means the hand has
+    shifted, and a shift lands on the index.
+
+    Requires :func:`annotate_hand_positions` to have run. Open strings get 0:
+    nothing is fretted, so no finger is involved.
+    """
+    cfg = config or FingerConfig()
+    for note in notes:
+        if note.fret is None:
+            note.finger = None
+            continue
+        if note.fret == 0:
+            note.finger = 0
+            continue
+
+        hand = note.hand if note.hand and note.hand > 0 else note.fret
+        offset = note.fret - hand
+
+        if 0 <= offset < cfg.span:
+            note.finger = offset + 1                 # in the box
+        elif offset == cfg.span:
+            note.finger = cfg.span                   # stretch up with the pinky
+        elif -cfg.stretch <= offset < 0:
+            note.finger = 1                          # reach back with the index
+        else:
+            note.finger = 1                          # shifted; land on the index
+    return list(notes)
+
+
 def fingering_stats(notes: Sequence[NoteEvent]) -> Dict[str, float]:
     """Playability + density metrics, handy for spotting a bad transcription."""
     played = [n for n in notes if n.fret is not None]
@@ -456,11 +508,12 @@ def _demo() -> None:
 
     assign_fingerings(notes, bass)
     annotate_hand_positions(notes)
+    assign_fingers(notes)
 
-    print("\n  time   note  str fret  hand")
+    print("\n  time   note  str fret  hand  finger")
     for note in notes[:16]:
         print(f"  {note.start:5.2f}  {note.name:>4}   {note.string}   "
-              f"{note.fret:>2}    {note.hand:>2}")
+              f"{note.fret:>2}    {note.hand:>2}      {note.finger}")
 
     stats = fingering_stats(notes)
     print("\nstats:")

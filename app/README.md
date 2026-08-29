@@ -65,6 +65,12 @@ the hand; the fret numbers moved underneath you, so there was no stable picture
 to learn. The span is fixed for the whole song instead, wide enough for every
 note in it.
 
+**The marker says which finger, the pill says which string.** The number inside
+the note marker is the fretting finger (1 index … 4 pinky); the small coloured
+pill beside it names the string. The fret is read off the numbers along the
+bottom. The pill flips underneath the marker on the top string, where there is
+no room above it.
+
 **Strings are colour-coded** (low to high: red, amber, green, blue) and the
 string you need is lit along its entire length. Colour is the fastest answer to
 "which string?", but never the only one — every string also carries its name,

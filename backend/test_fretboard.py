@@ -10,10 +10,12 @@ import sys
 from typing import List
 
 from fretboard import (
+    FingerConfig,
     Instrument,
     NoteEvent,
     annotate_hand_positions,
     assign_fingerings,
+    assign_fingers,
     fingering_stats,
     midi_to_name,
     note_name_to_midi,
@@ -151,6 +153,73 @@ def test_five_string_tuning():
     notes = phrase([23, 28, 35])
     assign_fingerings(notes, five)
     assert notes[0].string == 0 and notes[0].fret == 0
+
+
+def fingered(fret, hand, string=1):
+    note = NoteEvent(0.0, 0.2, 40, string=string, fret=fret, hand=hand)
+    assign_fingers([note])
+    return note.finger
+
+
+def test_fingers_in_the_box_are_one_per_fret():
+    """Hand at fret 7: index on 7, middle on 8, ring on 9, pinky on 10."""
+    assert [fingered(f, hand=7) for f in (7, 8, 9, 10)] == [1, 2, 3, 4]
+
+
+def test_fingers_low_on_the_neck_use_the_same_rule():
+    assert [fingered(f, hand=1) for f in (1, 2, 3, 4)] == [1, 2, 3, 4]
+
+
+def test_a_stretch_reaches_with_the_pinky():
+    """One fret past the box is a reach, not a move: the pinky takes it."""
+    assert fingered(11, hand=7) == 4
+    assert fingered(5, hand=1) == 4
+
+
+def test_a_reach_back_uses_the_index():
+    assert fingered(6, hand=7) == 1
+
+
+def test_a_shift_lands_on_the_index():
+    """Further than a stretch means the hand has moved, and a shift lands on 1."""
+    assert fingered(14, hand=7) == 1
+    assert fingered(2, hand=9) == 1
+
+
+def test_open_strings_have_no_finger():
+    assert fingered(0, hand=7) == 0
+
+
+def test_unplayable_notes_get_no_finger():
+    note = NoteEvent(0.0, 0.2, 20)
+    assign_fingers([note])
+    assert note.finger is None
+
+
+def test_finger_span_is_configurable():
+    """A three-finger span makes fret 10 a stretch rather than the pinky."""
+    note = NoteEvent(0.0, 0.2, 40, string=1, fret=10, hand=7)
+    assign_fingers([note], FingerConfig(span=3))
+    assert note.finger == 3
+
+
+def test_fingers_on_a_real_phrase():
+    """End to end: positions, hand anchor, then fingers."""
+    notes = phrase([40, 40, 52, 40, 47, 40, 52, 40])
+    assign_fingerings(notes, BASS)
+    annotate_hand_positions(notes)
+    assign_fingers(notes)
+
+    assert all(n.finger is not None for n in notes)
+    for note in notes:
+        if note.fret == 0:
+            assert note.finger == 0
+        else:
+            assert 1 <= note.finger <= 4, f"{note.name} got finger {note.finger}"
+
+    # E2 at fret 7 with the hand at 7 is the index; E3 at fret 9 is the ring.
+    assert notes[0].fret == 7 and notes[0].finger == 1
+    assert notes[2].fret == 9 and notes[2].finger == 3
 
 
 def main() -> int:

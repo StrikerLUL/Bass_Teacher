@@ -20,6 +20,8 @@ class FingeringConfig {
     this.comfortFret = 12,
     this.highFretPenalty = 0.08,
     this.handWindowSec = 0.75,
+    this.fingerSpan = 4,
+    this.fingerStretch = 1,
   });
 
   final int? maxFret;
@@ -36,6 +38,11 @@ class FingeringConfig {
   final int comfortFret;
   final double highFretPenalty;
   final double handWindowSec;
+
+  /// Fingers available, one per fret, and how far past the box the hand will
+  /// reach rather than move.
+  final int fingerSpan;
+  final int fingerStretch;
 }
 
 /// Playing [pos] with the fretting hand anchored at [anchor] since [since].
@@ -209,6 +216,36 @@ class FretboardMapper {
     for (var i = 0; i < notes.length; i++) {
       notes[i].string = chosen[i]?.string;
       notes[i].fret = chosen[i]?.fret;
+    }
+  }
+
+  /// Numbers the fretting fingers 1-4 from each note's hand position.
+  ///
+  /// Inside the box it is one finger per fret counting up from the index. One
+  /// fret past either edge is a stretch rather than a move — pinky up, index
+  /// back — and anything further means the hand shifted, which lands on the
+  /// index. Mirrors `assign_fingers` in `backend/fretboard.py`.
+  void assignFingers(List<NoteEvent> notes) {
+    for (final note in notes) {
+      final fret = note.fret;
+      if (fret == null) {
+        note.finger = null;
+        continue;
+      }
+      if (fret == 0) {
+        note.finger = 0; // open string: nothing fretted
+        continue;
+      }
+      final hand = (note.hand ?? 0) > 0 ? note.hand! : fret;
+      final offset = fret - hand;
+
+      if (offset >= 0 && offset < config.fingerSpan) {
+        note.finger = offset + 1;
+      } else if (offset == config.fingerSpan) {
+        note.finger = config.fingerSpan;
+      } else {
+        note.finger = 1;
+      }
     }
   }
 

@@ -42,6 +42,7 @@ try:  # works both as `python processor.py` and `python -m backend.processor`
         NoteEvent,
         annotate_hand_positions,
         assign_fingerings,
+        assign_fingers,
         fingering_stats,
         midi_to_name,
     )
@@ -52,6 +53,7 @@ except ImportError:  # pragma: no cover - script execution
         NoteEvent,
         annotate_hand_positions,
         assign_fingerings,
+        assign_fingers,
         fingering_stats,
         midi_to_name,
     )
@@ -645,6 +647,7 @@ def build_document(
             "string": n.string,
             "fret": n.fret,
             "hand": n.hand,
+            "finger": n.finger,
             **({"octave_shift": n.octave_shift} if n.octave_shift else {}),
         }
         for n in events
@@ -837,6 +840,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         events, instrument, FingeringConfig(max_fret=args.max_fret)
     )
     annotate_hand_positions(events)
+    assign_fingers(events)
 
     # ---- stage 5: document --------------------------------------------------
     duration, sample_rate = audio_info(bass_path)

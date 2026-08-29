@@ -70,6 +70,9 @@ class Transcription {
     if (notes.any((n) => n.hand == null)) {
       mapper.annotateHandPositions(notes);
     }
+    if (notes.any((n) => n.finger == null && n.fret != null)) {
+      mapper.assignFingers(notes);
+    }
 
     final source = root['source'];
     final declared = source is Map<String, dynamic>

@@ -18,6 +18,7 @@ from fretboard import (
     NoteEvent,
     annotate_hand_positions,
     assign_fingerings,
+    assign_fingers,
     fingering_stats,
 )
 from processor import (
@@ -94,6 +95,7 @@ def main() -> int:
     notes = build_riff()
     assign_fingerings(notes, bass)
     annotate_hand_positions(notes)
+    assign_fingers(notes)
 
     document = build_document(
         notes,

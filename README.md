@@ -79,10 +79,16 @@ to the JSON so a track folder can be moved.
   "stats":      { "notes": 812, "peak_notes_per_sec": 11, "max_fret_jump": 4 },
   "notes": [
     { "start": 0.512, "end": 0.698, "midi": 40, "name": "E2",
-      "velocity": 0.82, "string": 1, "fret": 7, "hand": 7 }
+      "velocity": 0.82, "string": 1, "fret": 7, "hand": 7, "finger": 1 }
   ]
 }
 ```
+
+`finger` is the fretting finger, 1 (index) to 4 (pinky); **0 means an open
+string**, where no finger is used. Inside the four-fret box it is one finger per
+fret counting up from the hand position; one fret past either edge is a stretch
+(pinky up, index back) rather than a move, and anything further means the hand
+shifted, which lands on the index.
 
 `string` 0 is the **lowest pitched** string throughout. `hand` is the fret the
 fretting hand should sit at for the surrounding phrase; the app uses it to draw

@@ -116,6 +116,61 @@ void main() {
     });
   });
 
+  group('assignFingers', () {
+    NoteEvent fingered(int fret, int hand) {
+      final note =
+          NoteEvent(start: 0, end: 0.2, midi: 40, string: 1, fret: fret, hand: hand);
+      FretboardMapper(bass).assignFingers([note]);
+      return note;
+    }
+
+    test('the box is one finger per fret', () {
+      // Hand at 7: index on 7, middle on 8, ring on 9, pinky on 10.
+      expect([7, 8, 9, 10].map((f) => fingered(f, 7).finger), [1, 2, 3, 4]);
+    });
+
+    test('a stretch reaches with the pinky', () {
+      expect(fingered(11, 7).finger, 4);
+    });
+
+    test('a shift lands on the index', () {
+      expect(fingered(14, 7).finger, 1);
+      expect(fingered(2, 9).finger, 1);
+    });
+
+    test('an open string uses no finger', () {
+      expect(fingered(0, 7).finger, 0);
+    });
+
+    test('an unplayable note gets none', () {
+      final note = NoteEvent(start: 0, end: 0.2, midi: 20);
+      FretboardMapper(bass).assignFingers([note]);
+      expect(note.finger, isNull);
+    });
+
+    test('matches the Python backend on the demo riff', () {
+      // Same expectations as test_fingers_on_a_real_phrase in
+      // backend/test_fretboard.py.
+      final notes = buildRiff();
+      final mapper = FretboardMapper(bass);
+      mapper.assign(notes);
+      mapper.annotateHandPositions(notes);
+      mapper.assignFingers(notes);
+
+      expect(notes[0].fret, 7);
+      expect(notes[0].finger, 1);
+      expect(notes[2].fret, 9);
+      expect(notes[2].finger, 3);
+      for (final note in notes) {
+        if (note.fret == 0) {
+          expect(note.finger, 0);
+        } else {
+          expect(note.finger, inInclusiveRange(1, 4));
+        }
+      }
+    });
+  });
+
   group('annotateHandPositions', () {
     test('ignores open strings when placing the hand', () {
       final notes = [

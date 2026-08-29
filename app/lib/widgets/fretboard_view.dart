@@ -27,6 +27,11 @@ const List<Color> _stringPalette = [
 
 Color stringColour(int index) => _stringPalette[index % _stringPalette.length];
 
+/// "E", "A", "D", "G" — the string's name without its octave number. It names
+/// the string to play, not a pitch to read.
+String stringLetter(Instrument instrument, int string) =>
+    midiToName(instrument.tuningMidi[string]).replaceAll(RegExp(r'\d'), '');
+
 /// Per-frame state for the fretboard: what is sounding and what is coming.
 ///
 /// The neck does not scroll. An earlier version slid a 15-fret window to follow
@@ -213,7 +218,7 @@ class FretboardPainter extends CustomPainter {
     _paintActiveStringBand(canvas, neck, rowHeight, yForString);
     _paintStrings(canvas, neck, rows, yForString);
     _paintUpcoming(canvas, radius, xForMarker, yForString);
-    _paintActive(canvas, radius, xForMarker, yForString);
+    _paintActive(canvas, neck, radius, xForMarker, yForString);
     _paintFretNumbers(canvas, neck, span, xForMarker);
     _paintStringLabels(canvas, neck, rows, rowHeight, yForString);
   }
@@ -424,7 +429,7 @@ class FretboardPainter extends CustomPainter {
     }
   }
 
-  void _paintActive(Canvas canvas, double radius,
+  void _paintActive(Canvas canvas, Rect neck, double radius,
       double Function(int) xForMarker, double Function(int) yForString) {
     for (final note in vm.active) {
       final string = note.string;
@@ -452,17 +457,67 @@ class FretboardPainter extends CustomPainter {
           ..strokeWidth = 2
           ..color = Colors.white.withValues(alpha: 0.9),
       );
+      // Inside the marker: which finger. Outside, just above it: which string.
+      // The fret is read off the numbers along the bottom.
+      final finger = note.finger;
       _drawText(
         canvas,
-        note.name,
+        finger != null && finger > 0 ? '$finger' : note.name,
         centre,
         TextStyle(
           color: Colors.white,
-          fontSize: math.min(15, radius * 0.72),
+          fontSize: finger != null && finger > 0
+              ? math.min(22, radius * 1.05)
+              : math.min(15, radius * 0.72),
           fontWeight: FontWeight.w800,
         ),
       );
+      // Above the marker, unless that would push the pill off the top of the
+      // board — on the highest string it has to sit underneath instead.
+      final gap = radius * swell + 11;
+      final above = centre.dy - gap;
+      _drawLabel(
+        canvas,
+        stringLetter(vm.instrument, string),
+        Offset(centre.dx, above < neck.top ? centre.dy + gap : above),
+        colour,
+      );
     }
+  }
+
+  /// A small pill so the string letter stays readable over the fretboard.
+  void _drawLabel(Canvas canvas, String text, Offset centre, Color colour) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          fontFamily: fontFamily,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final box = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: centre,
+        width: painter.width + 12,
+        height: painter.height + 4,
+      ),
+      const Radius.circular(9),
+    );
+    canvas.drawRRect(box, Paint()..color = colour);
+    canvas.drawRRect(
+      box,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = Colors.black.withValues(alpha: 0.35),
+    );
+    painter.paint(
+        canvas, centre - Offset(painter.width / 2, painter.height / 2));
   }
 
   // ---------------------------------------------------------------- labels --
@@ -534,12 +589,9 @@ class FretboardPainter extends CustomPainter {
           ..strokeWidth = lit ? 2.5 : 1.4
           ..color = colour.withValues(alpha: lit ? 1.0 : 0.65),
       );
-      // Name without the octave number: "E", not "E1". It names the string you
-      // are being told to play, not a pitch to read.
-      final name = midiToName(vm.instrument.tuningMidi[string]);
       _drawText(
         canvas,
-        name.replaceAll(RegExp(r'\d'), ''),
+        stringLetter(vm.instrument, string),
         centre,
         TextStyle(
           color: lit ? Colors.white : colour,
