@@ -287,24 +287,14 @@ class _SilentModeBanner extends StatelessWidget {
   }
 }
 
-/// What is sounding now and what is next, in words.
+/// What is sounding now and what is next: which string, which fret.
 class _NoteReadout extends StatelessWidget {
   const _NoteReadout({required this.viewModel});
 
   final FretboardViewModel viewModel;
 
-  /// Strings are named, not numbered: bassists call the G string the "1st" and
-  /// the E string the "4th", which is the reverse of the index used everywhere
-  /// else here. "D string, fret 7" cannot be misread.
-  String _describe(NoteEvent? note) {
-    if (note == null) return 'rest';
-    final string = note.string;
-    if (string == null || note.fret == null) return 'out of range';
-    final open = midiToName(viewModel.instrument.tuningMidi[string]);
-    return note.fret == 0
-        ? '$open string, open'
-        : '$open string, fret ${note.fret}';
-  }
+  String _stringName(int index) =>
+      midiToName(viewModel.instrument.tuningMidi[index]).replaceAll(RegExp(r'\d'), '');
 
   @override
   Widget build(BuildContext context) {
@@ -314,37 +304,115 @@ class _NoteReadout extends StatelessWidget {
       builder: (context, _, __) {
         final current = viewModel.current;
         final next = viewModel.next;
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
           child: Row(
             children: [
-              SizedBox(
-                width: 56,
-                child: Text(
-                  current?.name ?? '—',
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Text(
-                  _describe(current),
-                  style: theme.textTheme.bodyMedium,
-                ),
-              ),
+              _NoteChip(viewModel: viewModel, note: current, label: 'NOW'),
+              const SizedBox(width: 18),
               if (next != null)
+                Opacity(
+                  opacity: 0.62,
+                  child: _NoteChip(
+                      viewModel: viewModel, note: next, label: 'NEXT'),
+                ),
+              const Spacer(),
+              if (current != null && current.string != null)
                 Text(
-                  'next  ${next.name}  ·  ${_describe(next)}',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.tertiary,
+                  '${_stringName(current.string!)} string'
+                  '${current.fret == 0 ? '  ·  open' : '  ·  fret ${current.fret}'}',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// A note as the fretboard draws it: the string's colour, its name, the fret.
+class _NoteChip extends StatelessWidget {
+  const _NoteChip({
+    required this.viewModel,
+    required this.note,
+    required this.label,
+  });
+
+  final FretboardViewModel viewModel;
+  final NoteEvent? note;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final string = note?.string;
+    final colour = string == null
+        ? theme.colorScheme.outline
+        : stringColour(string);
+    final stringName = string == null
+        ? '—'
+        : midiToName(viewModel.instrument.tuningMidi[string])
+            .replaceAll(RegExp(r'\d'), '');
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          width: 38,
+          height: 38,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: colour.withValues(alpha: note == null ? 0.15 : 1.0),
+            shape: BoxShape.circle,
+            border: Border.all(color: colour, width: 2),
+          ),
+          child: Text(
+            stringName,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 16,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              note?.name ?? 'rest',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                height: 1.1,
+              ),
+            ),
+            Text(
+              note == null
+                  ? ''
+                  : note!.fret == 0
+                      ? 'open'
+                      : 'fret ${note!.fret}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                height: 1.1,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

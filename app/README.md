@@ -49,6 +49,28 @@ repaint and no widget rebuild. The text readout listens to `noteChanges`
 instead, which only fires when the current or next note actually changes —
 roughly ten rebuilds a second rather than sixty.
 
+**The neck does not scroll.** An earlier version slid a 15-fret window to follow
+the hand; the fret numbers moved underneath you, so there was no stable picture
+to learn. The span is fixed for the whole song instead, wide enough for every
+note in it.
+
+**Strings are colour-coded** (low to high: red, amber, green, blue) and the
+string you need is lit along its entire length. Colour is the fastest answer to
+"which string?", but never the only one — every string also carries its name,
+and the note is drawn on the string itself.
+
+## Verifying the fretboard
+
+`test/fretboard_render_test.dart` paints the fretboard straight to PNG files:
+
+```powershell
+$env:BASS_RENDER_OUT="$PWD\.render"; flutter test test/fretboard_render_test.dart
+```
+
+It renders the widget in isolation rather than capturing the screen, so it
+cannot pick up anything else on the desktop and produces the same image on any
+machine.
+
 ## Choices
 
 **media_kit, not just_audio.** Two stems play as independent voices so either

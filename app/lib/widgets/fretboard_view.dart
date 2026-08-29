@@ -7,24 +7,40 @@ import '../models/note_event.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 
-/// Frets that carry position markers on a bass neck.
+/// Frets carrying position markers on a bass neck.
 const Set<int> _inlayFrets = {3, 5, 7, 9, 15, 17, 19, 21};
 const Set<int> _doubleInlayFrets = {12, 24};
 
-/// Per-frame state for the fretboard: what is sounding, what is coming, and
-/// which stretch of neck to show.
+/// One colour per string, low to high.
 ///
-/// It drives the painter directly (as its `repaint` listenable) so a frame
-/// costs one repaint instead of a widget rebuild.
+/// Colour answers "which string?" faster than reading a label or counting rows,
+/// but it is never the only channel: every string also carries its name, and
+/// the note is drawn on the string itself.
+const List<Color> _stringPalette = [
+  Color(0xFFEF4A54), // low  - red
+  Color(0xFFF29A2E), //      - amber
+  Color(0xFF3FBF7F), //      - green
+  Color(0xFF3E9BF0), //      - blue
+  Color(0xFF9B6BF0), //      - violet
+  Color(0xFFE85BB0), // high - pink
+];
+
+Color stringColour(int index) => _stringPalette[index % _stringPalette.length];
+
+/// Per-frame state for the fretboard: what is sounding and what is coming.
+///
+/// The neck does not scroll. An earlier version slid a 15-fret window to follow
+/// the hand, which meant the fret numbers moved underneath you and there was no
+/// stable picture to learn. The span is instead fixed for the whole song, wide
+/// enough for every note in it, so a given fret is always in the same place.
 class FretboardViewModel extends ChangeNotifier {
   FretboardViewModel({
     required this.timeline,
     required this.instrument,
     required this.clock,
-    this.visibleFrets = 15,
     this.lookaheadSec = 1.2,
   }) {
-    _windowStart = 0;
+    _spanFrets = _computeSpan();
     advance(0);
   }
 
@@ -32,32 +48,35 @@ class FretboardViewModel extends ChangeNotifier {
   final Instrument instrument;
   final PlaybackClock clock;
 
-  /// How much of the neck fits on screen. A 24-fret neck drawn whole leaves the
-  /// upper frets too narrow to read, so the view scrolls instead.
-  final int visibleFrets;
-
   /// How far ahead to show notes the player should be preparing for.
   final double lookaheadSec;
 
-  /// Seconds for the scrolling neck to settle on a new hand position.
-  static const double _windowSettleSec = 0.18;
+  late final int _spanFrets;
+
+  /// Highest fret drawn. Fixed for the song so the picture never moves.
+  int get spanFrets => _spanFrets;
+
+  int _computeSpan() {
+    var highest = 0;
+    for (final note in timeline.notes) {
+      final fret = note.fret;
+      if (fret != null && fret > highest) highest = fret;
+    }
+    return math.min(instrument.frets, math.max(12, highest));
+  }
 
   double _time = 0;
-  double _windowStart = 0;
   int _lastHand = 0;
   List<NoteEvent> _active = const [];
   List<NoteEvent> _upcoming = const [];
   NoteEvent? _lastCurrent;
   NoteEvent? _lastNext;
 
-  /// Bumps only when the current or next note actually changes.
-  ///
-  /// The painter wants every frame; a text readout wants roughly ten a second,
-  /// so it listens to this instead and skips ~50 rebuilds a second.
+  /// Bumps only when the current or next note actually changes, so a text
+  /// readout can skip ~50 rebuilds a second.
   final ValueNotifier<int> noteChanges = ValueNotifier<int>(0);
 
   double get time => _time;
-  double get windowStart => _windowStart;
   List<NoteEvent> get active => _active;
   List<NoteEvent> get upcoming => _upcoming;
   NoteEvent? get current => _active.isEmpty ? null : _active.first;
@@ -74,7 +93,15 @@ class FretboardViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Advance by [dt] seconds of wall time. Called once per vsync.
+  bool _showHandBox = true;
+  bool get showHandBox => _showHandBox;
+  set showHandBox(bool value) {
+    if (value == _showHandBox) return;
+    _showHandBox = value;
+    notifyListeners();
+  }
+
+  /// Called once per vsync.
   void advance(double dt) {
     _time = clock.position;
     _active = timeline.activeAt(_time);
@@ -83,27 +110,12 @@ class FretboardViewModel extends ChangeNotifier {
     final anchor = _resolveHandFret();
     if (anchor > 0) _lastHand = anchor;
 
-    // Exponential ease, expressed against elapsed time so the scroll takes the
-    // same wall-clock duration regardless of frame rate.
-    final maxStart = math.max(0, instrument.frets - visibleFrets).toDouble();
-    final target = (_lastHand - 2).toDouble().clamp(0.0, maxStart);
-    final k = dt <= 0 ? 1.0 : 1 - math.exp(-dt / _windowSettleSec);
-    _windowStart += (target - _windowStart) * k;
-    if ((target - _windowStart).abs() < 0.01) _windowStart = target;
-
     if (!identical(current, _lastCurrent) || !identical(next, _lastNext)) {
       _lastCurrent = current;
       _lastNext = next;
       noteChanges.value++;
     }
-
     notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    noteChanges.dispose();
-    super.dispose();
   }
 
   int _resolveHandFret() {
@@ -118,51 +130,11 @@ class FretboardViewModel extends ChangeNotifier {
     }
     return _lastHand;
   }
-}
 
-/// Colours pulled once per build so the painter stays theme-agnostic.
-class FretboardPalette {
-  const FretboardPalette({
-    required this.neck,
-    required this.neckEdge,
-    required this.fretWire,
-    required this.nut,
-    required this.inlay,
-    required this.stringColor,
-    required this.label,
-    required this.labelDim,
-    required this.active,
-    required this.upcoming,
-    required this.handBox,
-  });
-
-  final Color neck;
-  final Color neckEdge;
-  final Color fretWire;
-  final Color nut;
-  final Color inlay;
-  final Color stringColor;
-  final Color label;
-  final Color labelDim;
-  final Color active;
-  final Color upcoming;
-  final Color handBox;
-
-  factory FretboardPalette.of(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return FretboardPalette(
-      neck: const Color(0xFF241C17),
-      neckEdge: const Color(0xFF3B2E25),
-      fretWire: const Color(0xFF6E6357),
-      nut: const Color(0xFFD9CFC0),
-      inlay: const Color(0x33FFFFFF),
-      stringColor: const Color(0xFFB9AE9C),
-      label: scheme.onSurface,
-      labelDim: scheme.onSurface.withValues(alpha: 0.45),
-      active: scheme.primary,
-      upcoming: scheme.tertiary,
-      handBox: scheme.primary.withValues(alpha: 0.07),
-    );
+  @override
+  void dispose() {
+    noteChanges.dispose();
+    super.dispose();
   }
 }
 
@@ -175,25 +147,33 @@ class FretboardView extends StatelessWidget {
   Widget build(BuildContext context) {
     return CustomPaint(
       size: Size.infinite,
-      painter: FretboardPainter(
-        vm: viewModel,
-        palette: FretboardPalette.of(context),
-      ),
+      painter: FretboardPainter(vm: viewModel),
     );
   }
 }
 
 class FretboardPainter extends CustomPainter {
-  FretboardPainter({required this.vm, required this.palette})
-      : super(repaint: vm);
+  FretboardPainter({required this.vm, this.fontFamily}) : super(repaint: vm);
 
   final FretboardViewModel vm;
-  final FretboardPalette palette;
 
-  static const double _gutterLeft = 46;
-  static const double _gutterBottom = 22;
-  static const double _gutterTop = 10;
-  static const double _gutterRight = 10;
+  /// Null uses the platform font. The render test names a family so the
+  /// offline picture matches what the app actually draws.
+  final String? fontFamily;
+
+  static const double _gutterLeft = 74;
+  static const double _gutterBottom = 24;
+  static const double _gutterTop = 20;
+  static const double _gutterRight = 12;
+
+  // Rosewood board, maple binding, nickel frets, bone nut.
+  static const Color _boardDark = Color(0xFF241611);
+  static const Color _boardLight = Color(0xFF4A3226);
+  static const Color _binding = Color(0xFFC9A227);
+  static const Color _fretWire = Color(0xFFB9B2A6);
+  static const Color _nutColour = Color(0xFFE8DCC8);
+  static const Color _stringMetal = Color(0xFFD8D2C4);
+  static const Color _inlay = Color(0xFFEDE6D6);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -203,238 +183,282 @@ class FretboardPainter extends CustomPainter {
       size.width - _gutterRight,
       size.height - _gutterBottom,
     );
-    if (neck.width < 40 || neck.height < 40) return;
+    if (neck.width < 80 || neck.height < 60) return;
 
-    final instrument = vm.instrument;
-    final rows = instrument.stringCount;
-    final start = vm.windowStart;
-    final span = vm.visibleFrets;
+    final rows = vm.instrument.stringCount;
+    final span = vm.spanFrets;
 
-    double xForFret(double fret) =>
-        neck.left + (fret - start) * neck.width / span;
-
-    // Centre of a fretted note: midway between its wire and the one before it.
+    double xForFret(double fret) => neck.left + fret * neck.width / span;
+    // Centre of a fretted note: between its wire and the one before it.
     double xForMarker(int fret) => xForFret(fret - 0.5);
-
+    // Strings sit close to the edges of the board, as they do on the
+    // instrument. Centring them in equal rows left dead bands above the top
+    // string and below the bottom one, which reads as a chart, not a neck.
+    final inset = neck.height * 0.13;
+    final spacing = rows > 1 ? (neck.height - 2 * inset) / (rows - 1) : 0.0;
     double yForString(int string) {
       final row = vm.lowStringOnTop ? string : rows - 1 - string;
-      return neck.top + (row + 0.5) * neck.height / rows;
+      return rows > 1 ? neck.top + inset + row * spacing : neck.center.dy;
     }
 
-    final radius = math.min(neck.width / span, neck.height / rows) * 0.36;
+    final fretWidth = neck.width / span;
+    final rowHeight = rows > 1 ? spacing : neck.height;
+    final radius = math.min(fretWidth * 0.46, rowHeight * 0.44);
 
-    _paintNeck(canvas, neck);
-
-    canvas.save();
-    canvas.clipRect(neck);
-    _paintHandBox(canvas, neck, xForFret);
-    _paintInlays(canvas, neck, rows, start, span, xForMarker);
-    _paintFretWires(canvas, neck, start, span, xForFret);
+    _paintBoard(canvas, neck);
+    _paintInlays(canvas, neck, span, xForMarker);
+    _paintFrets(canvas, neck, span, xForFret);
+    if (vm.showHandBox) _paintHandBox(canvas, neck, span, xForFret);
+    _paintActiveStringBand(canvas, neck, rowHeight, yForString);
     _paintStrings(canvas, neck, rows, yForString);
     _paintUpcoming(canvas, radius, xForMarker, yForString);
     _paintActive(canvas, radius, xForMarker, yForString);
-    canvas.restore();
-
-    _paintFretNumbers(canvas, neck, start, span, xForMarker);
-    _paintOpenStrings(canvas, neck, rows, yForString);
+    _paintFretNumbers(canvas, neck, span, xForMarker);
+    _paintStringLabels(canvas, neck, rows, rowHeight, yForString);
   }
 
-  // ------------------------------------------------------------------ neck --
+  // ----------------------------------------------------------------- board --
 
-  void _paintNeck(Canvas canvas, Rect neck) {
-    final rounded = RRect.fromRectAndRadius(neck, const Radius.circular(6));
+  void _paintBoard(Canvas canvas, Rect neck) {
+    final rounded = RRect.fromRectAndRadius(neck, const Radius.circular(8));
+
     canvas.drawRRect(
       rounded,
       Paint()
-        ..shader = LinearGradient(
+        ..shader = const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [palette.neckEdge, palette.neck, palette.neckEdge],
-          stops: const [0.0, 0.45, 1.0],
+          colors: [_boardLight, _boardDark, _boardDark, _boardLight],
+          stops: [0.0, 0.22, 0.78, 1.0],
         ).createShader(neck),
     );
-    canvas.drawRRect(
-      rounded,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = palette.neckEdge,
-    );
-  }
 
-  void _paintHandBox(Canvas canvas, Rect neck, double Function(double) xForFret) {
-    final hand = vm.handFret;
-    if (hand <= 0) return;
-    final box = Rect.fromLTRB(
-      xForFret(hand - 1.0),
-      neck.top,
-      xForFret(hand + 3.0),
-      neck.bottom,
-    );
-    canvas.drawRect(box, Paint()..color = palette.handBox);
+    // Wood grain: a few long, faint streaks along the board.
+    canvas.save();
+    canvas.clipRRect(rounded);
+    final grain = Paint()..strokeWidth = 1.2;
+    final random = math.Random(7); // fixed seed: the grain must not shimmer
+    for (var i = 0; i < 18; i++) {
+      final y = neck.top + random.nextDouble() * neck.height;
+      grain.color =
+          Colors.white.withValues(alpha: 0.015 + random.nextDouble() * 0.02);
+      canvas.drawLine(
+        Offset(neck.left, y),
+        Offset(neck.right, y + (random.nextDouble() - 0.5) * 10),
+        grain,
+      );
+    }
+    canvas.restore();
+
+    // Binding along the top and bottom edge.
+    final edge = Paint()
+      ..color = _binding.withValues(alpha: 0.5)
+      ..strokeWidth = 2;
+    canvas.drawLine(neck.topLeft, neck.topRight, edge);
+    canvas.drawLine(neck.bottomLeft, neck.bottomRight, edge);
   }
 
   void _paintInlays(
-    Canvas canvas,
-    Rect neck,
-    int rows,
-    double start,
-    int span,
-    double Function(int) xForMarker,
-  ) {
-    final paint = Paint()..color = palette.inlay;
-    final radius = math.min(neck.width / span, neck.height / rows) * 0.16;
-    for (var fret = start.floor(); fret <= start + span + 1; fret++) {
-      if (fret < 1 || fret > vm.instrument.frets) continue;
+      Canvas canvas, Rect neck, int span, double Function(int) xForMarker) {
+    final paint = Paint()..color = _inlay.withValues(alpha: 0.30);
+    final radius = math.min(neck.width / span, neck.height / 4) * 0.17;
+    for (var fret = 1; fret <= span; fret++) {
       final x = xForMarker(fret);
       if (_doubleInlayFrets.contains(fret)) {
-        canvas.drawCircle(Offset(x, neck.top + neck.height * 0.28), radius, paint);
-        canvas.drawCircle(Offset(x, neck.top + neck.height * 0.72), radius, paint);
+        canvas.drawCircle(
+            Offset(x, neck.top + neck.height * 0.26), radius, paint);
+        canvas.drawCircle(
+            Offset(x, neck.top + neck.height * 0.74), radius, paint);
       } else if (_inlayFrets.contains(fret)) {
         canvas.drawCircle(Offset(x, neck.center.dy), radius, paint);
+      }
+      // Side dots on the top edge, where a player actually looks.
+      if (_inlayFrets.contains(fret) || _doubleInlayFrets.contains(fret)) {
+        canvas.drawCircle(
+          Offset(x, neck.top - 9),
+          _doubleInlayFrets.contains(fret) ? 3.2 : 2.4,
+          Paint()..color = _inlay.withValues(alpha: 0.75),
+        );
       }
     }
   }
 
-  void _paintFretWires(
-    Canvas canvas,
-    Rect neck,
-    double start,
-    int span,
-    double Function(double) xForFret,
-  ) {
-    final wire = Paint()
-      ..color = palette.fretWire
-      ..strokeWidth = 1.6;
-    final nut = Paint()
-      ..color = palette.nut
-      ..strokeWidth = 5;
-
-    for (var fret = start.floor(); fret <= start + span + 1; fret++) {
-      if (fret < 0 || fret > vm.instrument.frets) continue;
+  void _paintFrets(
+      Canvas canvas, Rect neck, int span, double Function(double) xForFret) {
+    for (var fret = 0; fret <= span; fret++) {
       final x = xForFret(fret.toDouble());
-      canvas.drawLine(
-        Offset(x, neck.top),
-        Offset(x, neck.bottom),
-        fret == 0 ? nut : wire,
+      if (fret == 0) {
+        // The nut: thicker, bone coloured, sitting proud of the board.
+        canvas.drawRect(
+          Rect.fromLTRB(x - 3, neck.top, x + 3, neck.bottom),
+          Paint()..color = _nutColour,
+        );
+        canvas.drawLine(
+          Offset(x - 3, neck.top),
+          Offset(x - 3, neck.bottom),
+          Paint()
+            ..color = Colors.black.withValues(alpha: 0.35)
+            ..strokeWidth = 1,
+        );
+      } else {
+        canvas.drawLine(
+          Offset(x, neck.top),
+          Offset(x, neck.bottom),
+          Paint()
+            ..color = _fretWire
+            ..strokeWidth = 2.4,
+        );
+        // A highlight down one side reads as rounded metal.
+        canvas.drawLine(
+          Offset(x - 1.2, neck.top),
+          Offset(x - 1.2, neck.bottom),
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.18)
+            ..strokeWidth = 0.8,
+        );
+      }
+    }
+  }
+
+  void _paintHandBox(
+      Canvas canvas, Rect neck, int span, double Function(double) xForFret) {
+    final hand = vm.handFret;
+    if (hand <= 0) return;
+    final left = xForFret((hand - 1).clamp(0, span).toDouble());
+    final right = xForFret((hand + 3).clamp(0, span).toDouble());
+    canvas.drawRect(
+      Rect.fromLTRB(left, neck.top, right, neck.bottom),
+      Paint()..color = Colors.white.withValues(alpha: 0.05),
+    );
+  }
+
+  // --------------------------------------------------------------- strings --
+
+  /// A wash of the string's own colour along its whole length while it sounds.
+  /// This is the "which string do I play" cue: readable at a glance, unlike a
+  /// single marker somewhere along the neck.
+  void _paintActiveStringBand(Canvas canvas, Rect neck, double rowHeight,
+      double Function(int) yForString) {
+    for (final note in vm.active) {
+      final string = note.string;
+      if (string == null) continue;
+      final y = yForString(string);
+      final colour = stringColour(string);
+      final band = Rect.fromLTRB(
+          neck.left, y - rowHeight * 0.42, neck.right, y + rowHeight * 0.42);
+      canvas.drawRect(
+        band,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              colour.withValues(alpha: 0.0),
+              colour.withValues(alpha: 0.22),
+              colour.withValues(alpha: 0.0),
+            ],
+          ).createShader(band),
       );
     }
   }
 
   void _paintStrings(
-    Canvas canvas,
-    Rect neck,
-    int rows,
-    double Function(int) yForString,
-  ) {
+      Canvas canvas, Rect neck, int rows, double Function(int) yForString) {
+    final ringing = {
+      for (final note in vm.active)
+        if (note.string != null) note.string!
+    };
+
     for (var string = 0; string < rows; string++) {
       final y = yForString(string);
-      // Lower strings are visibly fatter, which is how you find them by eye.
-      final thickness = 1.2 + (rows - 1 - string) * 0.8;
+      // Lower strings are visibly fatter, as on the instrument.
+      final gauge = 1.6 + (rows - 1 - string) * 1.15;
+      final lit = ringing.contains(string);
+
+      canvas.drawLine(
+        Offset(neck.left, y + gauge * 0.7),
+        Offset(neck.right, y + gauge * 0.7),
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.45)
+          ..strokeWidth = gauge,
+      );
       canvas.drawLine(
         Offset(neck.left, y),
         Offset(neck.right, y),
         Paint()
-          ..color = palette.stringColor
-          ..strokeWidth = thickness,
+          ..color = lit ? stringColour(string) : _stringMetal
+          ..strokeWidth = gauge,
+      );
+      canvas.drawLine(
+        Offset(neck.left, y - gauge * 0.28),
+        Offset(neck.right, y - gauge * 0.28),
+        Paint()
+          ..color = Colors.white.withValues(alpha: lit ? 0.5 : 0.28)
+          ..strokeWidth = gauge * 0.3,
       );
     }
   }
 
   // ----------------------------------------------------------------- notes --
 
-  void _paintUpcoming(
-    Canvas canvas,
-    double radius,
-    double Function(int) xForMarker,
-    double Function(int) yForString,
-  ) {
+  void _paintUpcoming(Canvas canvas, double radius,
+      double Function(int) xForMarker, double Function(int) yForString) {
     for (final note in vm.upcoming) {
       final string = note.string;
       final fret = note.fret;
       if (string == null || fret == null || fret == 0) continue;
 
-      // Fade in as the note approaches, so the eye tracks what is next without
-      // the ghosts competing with the note actually sounding.
       final lead = (note.start - vm.time) / vm.lookaheadSec;
-      final opacity = (1.0 - lead).clamp(0.0, 1.0) * 0.5;
+      final opacity = (1.0 - lead).clamp(0.0, 1.0) * 0.65;
       if (opacity < 0.02) continue;
 
       canvas.drawCircle(
         Offset(xForMarker(fret), yForString(string)),
-        radius * (0.6 + 0.25 * (1 - lead)),
+        radius * (0.55 + 0.3 * (1 - lead)),
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = palette.upcoming.withValues(alpha: opacity),
+          ..strokeWidth = 2.4
+          ..color = stringColour(string).withValues(alpha: opacity),
       );
     }
-
-    _paintShiftHint(canvas, xForMarker, yForString);
   }
 
-  /// A dashed line to the next note when it is out of reach of the current hand
-  /// position — the moment a learner needs warning that a shift is coming.
-  void _paintShiftHint(
-    Canvas canvas,
-    double Function(int) xForMarker,
-    double Function(int) yForString,
-  ) {
-    final from = vm.current;
-    final to = vm.next;
-    if (from == null || to == null) return;
-    if (from.fret == null || to.fret == null) return;
-    if (from.fret == 0 || to.fret == 0) return;
-    if ((to.fret! - from.fret!).abs() < 5) return;
-
-    _dashedLine(
-      canvas,
-      Offset(xForMarker(from.fret!), yForString(from.string!)),
-      Offset(xForMarker(to.fret!), yForString(to.string!)),
-      Paint()
-        ..color = palette.upcoming.withValues(alpha: 0.55)
-        ..strokeWidth = 1.6,
-    );
-  }
-
-  void _paintActive(
-    Canvas canvas,
-    double radius,
-    double Function(int) xForMarker,
-    double Function(int) yForString,
-  ) {
+  void _paintActive(Canvas canvas, double radius,
+      double Function(int) xForMarker, double Function(int) yForString) {
     for (final note in vm.active) {
       final string = note.string;
       final fret = note.fret;
-      if (string == null || fret == null) continue;
-      if (fret == 0) continue; // open strings light up their gutter badge
+      if (string == null || fret == null || fret == 0) continue;
 
-      // Attack reads as a brief swell that decays over the note.
       final progress = note.progressAt(vm.time);
-      final swell = 1.0 + 0.22 * (1 - progress) * (1 - progress);
-      final alpha = (0.55 + 0.45 * (1 - progress)).clamp(0.0, 1.0);
+      final swell = 1.0 + 0.18 * (1 - progress) * (1 - progress);
+      final colour = stringColour(string);
       final centre = Offset(xForMarker(fret), yForString(string));
 
       canvas.drawCircle(
         centre,
-        radius * swell * 1.5,
+        radius * swell * 1.7,
         Paint()
-          ..color = palette.active.withValues(alpha: alpha * 0.35)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+          ..color = colour.withValues(alpha: 0.45 * (1 - progress) + 0.2)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
       );
+      canvas.drawCircle(centre, radius * swell, Paint()..color = colour);
       canvas.drawCircle(
         centre,
         radius * swell,
-        Paint()..color = palette.active.withValues(alpha: alpha),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = Colors.white.withValues(alpha: 0.9),
       );
       _drawText(
         canvas,
         note.name,
         centre,
         TextStyle(
-          color: Colors.black.withValues(alpha: 0.85),
-          fontSize: math.min(13, radius * 0.75),
-          fontWeight: FontWeight.w700,
+          color: Colors.white,
+          fontSize: math.min(15, radius * 0.72),
+          fontWeight: FontWeight.w800,
         ),
       );
     }
@@ -443,116 +467,110 @@ class FretboardPainter extends CustomPainter {
   // ---------------------------------------------------------------- labels --
 
   void _paintFretNumbers(
-    Canvas canvas,
-    Rect neck,
-    double start,
-    int span,
-    double Function(int) xForMarker,
-  ) {
-    for (var fret = start.floor(); fret <= start + span + 1; fret++) {
-      if (fret < 1 || fret > vm.instrument.frets) continue;
-      final x = xForMarker(fret);
-      if (x < neck.left - 4 || x > neck.right + 4) continue;
+      Canvas canvas, Rect neck, int span, double Function(int) xForMarker) {
+    final handLow = vm.handFret;
+    for (var fret = 1; fret <= span; fret++) {
       final marked =
           _inlayFrets.contains(fret) || _doubleInlayFrets.contains(fret);
+      final inHand = vm.showHandBox &&
+          handLow > 0 &&
+          fret >= handLow &&
+          fret < handLow + 4;
       _drawText(
         canvas,
         '$fret',
-        Offset(x, neck.bottom + _gutterBottom / 2),
+        Offset(xForMarker(fret), neck.bottom + _gutterBottom / 2),
         TextStyle(
-          color: marked ? palette.label : palette.labelDim,
+          color: inHand
+              ? Colors.white
+              : Colors.white.withValues(alpha: marked ? 0.75 : 0.38),
           fontSize: 11,
-          fontWeight: marked ? FontWeight.w600 : FontWeight.w400,
+          fontWeight: inHand || marked ? FontWeight.w700 : FontWeight.w400,
         ),
       );
     }
   }
 
-  /// Open-string badges live in the left gutter and light up in place of a
-  /// marker on the neck, since fret 0 has no space between wires to sit in.
-  void _paintOpenStrings(
-    Canvas canvas,
-    Rect neck,
-    int rows,
-    double Function(int) yForString,
-  ) {
-    final radius = math.min(14.0, neck.height / rows * 0.34);
-    final ringing = {
+  /// Big colour-coded name per string, doubling as the legend and as the
+  /// open-string indicator.
+  void _paintStringLabels(Canvas canvas, Rect neck, int rows, double rowHeight,
+      double Function(int) yForString) {
+    final ringingOpen = {
       for (final note in vm.active)
         if (note.fret == 0 && note.string != null) note.string!
     };
+    final ringing = {
+      for (final note in vm.active)
+        if (note.string != null) note.string!
+    };
 
     for (var string = 0; string < rows; string++) {
-      final centre = Offset(_gutterLeft / 2, yForString(string));
+      final centre = Offset(_gutterLeft / 2 - 4, yForString(string));
+      final colour = stringColour(string);
+      final open = ringingOpen.contains(string);
       final lit = ringing.contains(string);
-      if (lit) {
+      final size = math.min(20.0, rowHeight * 0.34);
+
+      if (open) {
         canvas.drawCircle(
           centre,
-          radius * 1.5,
+          size * 1.5,
           Paint()
-            ..color = palette.active.withValues(alpha: 0.35)
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+            ..color = colour.withValues(alpha: 0.55)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
         );
       }
       canvas.drawCircle(
         centre,
-        radius,
-        lit
-            ? (Paint()..color = palette.active)
-            : (Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1
-              ..color = palette.labelDim),
+        size,
+        Paint()..color = lit ? colour : colour.withValues(alpha: 0.20),
       );
+      canvas.drawCircle(
+        centre,
+        size,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = lit ? 2.5 : 1.4
+          ..color = colour.withValues(alpha: lit ? 1.0 : 0.65),
+      );
+      // Name without the octave number: "E", not "E1". It names the string you
+      // are being told to play, not a pitch to read.
+      final name = midiToName(vm.instrument.tuningMidi[string]);
       _drawText(
         canvas,
-        midiToName(vm.instrument.tuningMidi[string]),
+        name.replaceAll(RegExp(r'\d'), ''),
         centre,
         TextStyle(
-          color: lit ? Colors.black.withValues(alpha: 0.85) : palette.labelDim,
-          fontSize: 11,
-          fontWeight: lit ? FontWeight.w700 : FontWeight.w500,
+          color: lit ? Colors.white : colour,
+          fontSize: size * 0.95,
+          fontWeight: FontWeight.w800,
         ),
       );
+      if (open) {
+        _drawText(
+          canvas,
+          'open',
+          Offset(centre.dx, centre.dy + size + 7),
+          TextStyle(color: colour, fontSize: 9, fontWeight: FontWeight.w700),
+        );
+      }
     }
   }
-
-  // --------------------------------------------------------------- helpers --
 
   void _drawText(Canvas canvas, String text, Offset centre, TextStyle style) {
     final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
+      text: TextSpan(
+          text: text,
+          style: fontFamily == null
+              ? style
+              : style.copyWith(fontFamily: fontFamily)),
       textDirection: TextDirection.ltr,
     )..layout();
     painter.paint(
-      canvas,
-      centre - Offset(painter.width / 2, painter.height / 2),
-    );
-  }
-
-  void _dashedLine(
-    Canvas canvas,
-    Offset from,
-    Offset to,
-    Paint paint, {
-    double dash = 6,
-    double gap = 5,
-  }) {
-    final delta = to - from;
-    final length = delta.distance;
-    if (length < 1) return;
-    final step = delta / length;
-    for (var travelled = 0.0; travelled < length; travelled += dash + gap) {
-      final end = math.min(travelled + dash, length);
-      canvas.drawLine(
-        from + step * travelled,
-        from + step * end,
-        paint,
-      );
-    }
+        canvas, centre - Offset(painter.width / 2, painter.height / 2));
   }
 
   @override
   bool shouldRepaint(covariant FretboardPainter old) =>
-      old.vm != vm || old.palette != palette;
+      old.vm != vm || old.fontFamily != fontFamily;
 }
