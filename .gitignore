@@ -22,7 +22,7 @@ app/.dart_tool/
 app/.flutter-plugins
 app/.flutter-plugins-dependencies
 app/build/
-app/pubspec.lock
+# pubspec.lock IS committed: this is an app, not a library - reproducible builds
 app/.packages
 app/ios/Pods/
 app/macos/Pods/
