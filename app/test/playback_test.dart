@@ -1,6 +1,7 @@
 import 'package:bass_trainer/models/note_event.dart';
 import 'package:bass_trainer/services/note_timeline.dart';
 import 'package:bass_trainer/services/playback_clock.dart';
+import 'package:bass_trainer/services/stem_player.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 List<NoteEvent> _notes() => [
@@ -12,6 +13,7 @@ List<NoteEvent> _notes() => [
     ];
 
 void main() {
+  mixerTests();
   group('NoteTimeline', () {
     final timeline = NoteTimeline(_notes());
 
@@ -139,6 +141,50 @@ void main() {
       // Changing rate must not retroactively rescale the first 100ms.
       expect(clock.position, greaterThanOrEqualTo(2.0));
       expect(clock.position, lessThan(2.3));
+    });
+  });
+}
+
+void mixerTests() {
+  group('StemPlayer mix', () {
+    test('plays both stems by default', () {
+      final m = StemPlayer.mixLevels(soloBass: false, bassMuted: false);
+      expect(m.bass, 1.0);
+      expect(m.backing, 1.0);
+    });
+
+    test('muting the bass leaves the backing audible', () {
+      final m = StemPlayer.mixLevels(soloBass: false, bassMuted: true);
+      expect(m.bass, 0.0);
+      expect(m.backing, 1.0);
+    });
+
+    test('soloing the bass silences the backing', () {
+      final m = StemPlayer.mixLevels(soloBass: true, bassMuted: false);
+      expect(m.bass, 1.0);
+      expect(m.backing, 0.0);
+    });
+
+    test('solo overrides mute instead of silencing everything', () {
+      // The regression: mute the bass, then hit solo, and both stems were
+      // muted at once — the player went silent with no obvious way back.
+      final m = StemPlayer.mixLevels(soloBass: true, bassMuted: true);
+      expect(m.bass, 1.0, reason: 'solo must un-mute the bass');
+      expect(m.backing, 0.0);
+      expect(m.bass + m.backing, greaterThan(0.0),
+          reason: 'no combination of toggles may produce total silence');
+    });
+
+    test('no toggle combination is ever fully silent', () {
+      for (final solo in [true, false]) {
+        for (final muted in [true, false]) {
+          final m = StemPlayer.mixLevels(soloBass: solo, bassMuted: muted);
+          if (solo || !muted) {
+            expect(m.bass + m.backing, greaterThan(0.0),
+                reason: 'solo=$solo muted=$muted produced silence');
+          }
+        }
+      }
     });
   });
 }

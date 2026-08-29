@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -11,6 +12,8 @@ import '../models/transcription.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
+import '../services/transcription_job.dart';
+import '../widgets/process_dialogs.dart';
 import '../widgets/fretboard_view.dart';
 import '../widgets/transport_controls.dart';
 
@@ -105,6 +108,52 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  /// Pick a song, run the Python pipeline on it, then load the result.
+  Future<void> _processSong() async {
+    if (TranscriptionJob.locateProcessor() == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not find backend/processor.py next to the app.'),
+      ));
+      return;
+    }
+
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: TranscriptionJob.audioExtensions,
+      dialogTitle: 'Choose a song to transcribe',
+    );
+    final audioPath = picked?.files.single.path;
+    if (audioPath == null || !mounted) return;
+
+    final preview = await askProcessingOptions(context, audioPath);
+    if (preview == null || !mounted) return;
+
+    final job = TranscriptionJob();
+    unawaited(job.run(audioPath: audioPath, preview: preview));
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => ProcessingDialog(job: job),
+    );
+
+    final result = job.resultPath;
+    job.dispose();
+    if (ok != true || result == null || !mounted) return;
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await _apply(await Transcription.load(File(result)));
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not open the result: $error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   Future<void> _apply(Transcription transcription) async {
     await _player.pause();
     _clock.seekTo(0);
@@ -154,7 +203,12 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
             ),
           IconButton(
-            tooltip: 'Open transcription.json',
+            tooltip: 'Add a song — separate the bass and transcribe it',
+            icon: const Icon(Icons.library_music),
+            onPressed: _loading ? null : _processSong,
+          ),
+          IconButton(
+            tooltip: 'Open an existing transcription.json',
             icon: const Icon(Icons.folder_open),
             onPressed: _loading ? null : _openFile,
           ),
@@ -226,7 +280,7 @@ class _SilentModeBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Text(
         'No stems for this transcription — the fretboard is running on the '
-        'internal clock. Run backend/processor.py on a song to add audio.',
+        'internal clock. Use the ♫ button above to add a song.',
         style: TextStyle(color: scheme.onSecondaryContainer, fontSize: 12),
       ),
     );

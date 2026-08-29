@@ -138,20 +138,18 @@ class _StemMix extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final enabled = player.hasAudio;
+    final theme = Theme.of(context);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
-          onPressed: enabled
+          onPressed: player.hasBass
               ? () async {
                   await player.setBassMuted(!player.bassMuted);
                   onChanged();
                 }
               : null,
-          icon: Icon(
-            player.bassMuted ? Icons.music_off : Icons.music_note,
-          ),
+          icon: Icon(player.bassMuted ? Icons.music_off : Icons.music_note),
           tooltip: player.bassMuted
               ? 'Unmute bass — hear the line'
               : 'Mute bass — play it yourself',
@@ -160,13 +158,24 @@ class _StemMix extends StatelessWidget {
         FilterChip(
           label: const Text('Solo bass'),
           selected: player.soloBass,
-          onSelected: enabled
+          // Soloing needs a bass stem to solo, and only means anything when
+          // there is a backing track to silence.
+          onSelected: player.hasBass && player.hasBacking
               ? (value) async {
                   await player.setSoloBass(value);
                   onChanged();
                 }
               : null,
           visualDensity: VisualDensity.compact,
+        ),
+        const SizedBox(width: 10),
+        // Say plainly what is audible: mute and solo interact, and silence
+        // with no explanation reads as a broken player.
+        Text(
+          player.mixDescription,
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
       ],
     );

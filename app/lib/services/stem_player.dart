@@ -129,7 +129,9 @@ class StemPlayer {
   }
 
   Future<void> setSoloBass(bool solo) {
-    _soloBass = solo;
+    // Without a bass stem there is nothing to solo, and engaging it would
+    // silence the backing for no reason.
+    _soloBass = solo && hasBass;
     return _applyVolumes();
   }
 
@@ -143,9 +145,38 @@ class StemPlayer {
     return _applyVolumes();
   }
 
+  /// What you can currently hear, for the UI to show.
+  String get mixDescription {
+    if (!hasAudio) return 'No audio loaded';
+    if (_soloBass) return 'Bass only';
+    if (_bassMuted) return hasBacking ? 'Backing only — play the bass yourself' : 'Silent';
+    return hasBacking ? 'Bass + backing' : 'Bass only';
+  }
+
+  /// Solo wins over mute, the way a mixing desk behaves.
+  ///
+  /// Treating them as two independent switches let both be engaged at once:
+  /// mute the bass, then hit Solo bass, and every stem was silenced with no
+  /// obvious way back. Soloing the bass now un-mutes it.
+  static ({double bass, double backing}) mixLevels({
+    required bool soloBass,
+    required bool bassMuted,
+    double bassVolume = 1.0,
+    double backingVolume = 1.0,
+  }) {
+    if (soloBass) return (bass: bassVolume, backing: 0.0);
+    return (bass: bassMuted ? 0.0 : bassVolume, backing: backingVolume);
+  }
+
   Future<void> _applyVolumes() async {
-    final bassLevel = _bassMuted ? 0.0 : _bassVolume;
-    final backingLevel = _soloBass ? 0.0 : _backingVolume;
+    final levels = mixLevels(
+      soloBass: _soloBass,
+      bassMuted: _bassMuted,
+      bassVolume: _bassVolume,
+      backingVolume: _backingVolume,
+    );
+    final bassLevel = levels.bass;
+    final backingLevel = levels.backing;
     await Future.wait<void>([
       if (_bass != null) _bass!.setVolume(bassLevel * 100),
       if (_backing != null) _backing!.setVolume(backingLevel * 100),

@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -331,12 +332,90 @@ def make_monophonic(events: List[NoteEvent], simultaneity: float) -> List[NoteEv
     return out
 
 
+def _band_energy(samples, sample_rate: int, freq: float, width: float = 0.04) -> float:
+    import numpy as np
+
+    size = max(len(samples), 16384)
+    spectrum = np.abs(np.fft.rfft(samples * np.hanning(len(samples)), n=size))
+    freqs = np.fft.rfftfreq(size, 1.0 / sample_rate)
+    band = (freqs > freq * (1 - width)) & (freqs < freq * (1 + width))
+    return float(spectrum[band].sum())
+
+
+def fix_octave_outliers(
+    events: List[NoteEvent],
+    instrument: Instrument,
+    bass_path: Optional[Path],
+    window: float,
+    threshold: int,
+) -> Tuple[List[NoteEvent], int]:
+    """Pull a stray note down an octave, but only when the audio agrees.
+
+    Basic Pitch does sometimes lock onto a harmonic instead of the fundamental,
+    and one such note is enough to send the fingering search to the 24th fret
+    and back. Context alone cannot identify them, though: measured against a
+    fast J-Pop line, a "10 semitones above the local median" rule moved 89
+    notes and the bass stem's own spectrum disagreed with 86 of them — the part
+    genuinely climbs.
+
+    So context only nominates candidates. Each one is then checked against the
+    stem, and the shift happens only if the octave below actually carries at
+    least as much energy as the pitch that was reported.
+    """
+    if not events or bass_path is None or not bass_path.exists():
+        return events, 0
+    if find_spec("numpy") is None or find_spec("soundfile") is None:
+        return events, 0
+
+    import soundfile as sf
+
+    # Nominate: notes sitting far above their own neighbourhood.
+    starts = [n.start for n in events]
+    lo = hi = 0
+    candidates: List[NoteEvent] = []
+    for i, note in enumerate(events):
+        while lo < len(starts) and starts[lo] < note.start - window:
+            lo += 1
+        while hi < len(starts) and starts[hi] <= note.start + window:
+            hi += 1
+        neighbours = [events[j].midi for j in range(lo, hi) if j != i]
+        if len(neighbours) < 4:
+            continue
+        if note.midi - statistics.median(neighbours) >= threshold:
+            candidates.append(note)
+    if not candidates:
+        return events, 0
+
+    # Confirm against the stem.
+    shifted = 0
+    with sf.SoundFile(str(bass_path)) as handle:
+        rate = handle.samplerate
+        for note in candidates:
+            while note.midi - 12 >= instrument.lowest_midi:
+                handle.seek(max(0, int(note.start * rate)))
+                frames = handle.read(
+                    max(int(max(note.duration, 0.05) * rate), 1024), dtype="float32"
+                )
+                if len(frames) < 1024:
+                    break
+                if getattr(frames, "ndim", 1) > 1:
+                    frames = frames.mean(axis=1)
+                reported = _band_energy(frames, rate, midi_to_hz(note.midi))
+                lower = _band_energy(frames, rate, midi_to_hz(note.midi - 12))
+                if lower < reported:
+                    break  # the audio backs the higher pitch: leave it alone
+                note.midi -= 12
+                note.octave_shift -= 1
+                shifted += 1
+    return events, shifted
+
+
 def fit_to_instrument(events: List[NoteEvent], instrument: Instrument) -> List[NoteEvent]:
     """Octave-shift stragglers into range rather than dropping them."""
     for note in events:
         fitted, shift = instrument.fit_pitch(note.midi)
         note.midi = fitted
-        note.octave_shift = shift
+        note.octave_shift += shift
     return [n for n in events if instrument.lowest_midi <= n.midi <= instrument.highest_midi]
 
 
@@ -440,6 +519,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                        help="notes this close together count as one attack")
     group.add_argument("--polyphonic", action="store_true",
                        help="keep overlapping notes instead of collapsing to one voice")
+    group.add_argument("--no-octave-fix", action="store_true",
+                       help="keep notes that sit far above the surrounding line")
+    group.add_argument("--octave-threshold", type=int, default=10,
+                       help="semitones above the local median that counts as a stray")
+    group.add_argument("--octave-window", type=float, default=2.0,
+                       help="seconds of context used to judge a stray note")
 
     group = parser.add_argument_group("instrument")
     group.add_argument("--tuning", default=DEFAULT_TUNING,
@@ -515,6 +600,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     events = merge_repeats(events, args.merge_gap_ms / 1000.0)
     if not args.polyphonic:
         events = make_monophonic(events, args.simultaneity_ms / 1000.0)
+    if not args.no_octave_fix:
+        events, shifted = fix_octave_outliers(
+            events, instrument, bass_path, args.octave_window, args.octave_threshold
+        )
+        log(f"octave fix: {shifted} stray note(s) confirmed against the stem "
+            f"and pulled down an octave")
     events = fit_to_instrument(events, instrument)
     log(f"clean-up: {before} -> {len(events)} notes")
     if not events:
