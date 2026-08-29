@@ -56,6 +56,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     final dt = (elapsed - _lastFrame).inMicroseconds / 1e6;
     _lastFrame = elapsed;
     _clock.tick();
+
+    // Stop at the end of the track. With stems loaded, media_kit's `completed`
+    // stream handles this; a transcription with no audio has no engine to
+    // report completion, so without this the clock parks on the last frame
+    // still reporting itself as playing.
+    if (_clock.isPlaying &&
+        _clock.duration > 0 &&
+        _clock.position >= _clock.duration) {
+      _player.pause();
+    }
+
     // Cap dt so a dropped frame or a backgrounded window does not teleport the
     // scrolling neck.
     _viewModel?.advance(dt.clamp(0.0, 0.1));
