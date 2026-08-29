@@ -1,0 +1,34 @@
+name: bass_trainer
+description: >-
+  Interactive bass guitar learning app: stem separation, transcription, and a
+  fretboard visualiser synchronised to playback.
+publish_to: none
+version: 0.1.0
+
+environment:
+  # withValues(alpha:) and the Material 3 defaults used here need Flutter 3.27+.
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Audio. media_kit (libmpv) rather than just_audio because this app plays two
+  # stems as independent voices and needs pitch-corrected rate control on
+  # Windows/Linux/macOS as well as mobile — just_audio's desktop support is
+  # federated out to community packages with uneven rate handling.
+  media_kit: ^1.1.10
+  media_kit_libs_audio: ^1.0.4
+
+  file_picker: ^8.1.2
+  path: ^1.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/sample/

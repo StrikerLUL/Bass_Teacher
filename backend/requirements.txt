@@ -1,0 +1,15 @@
+# Stage 1 — stem separation.
+# Pulls PyTorch (~2.5 GB with the CUDA wheels). If you want a specific CUDA
+# build, install torch first so pip does not pick the CPU-only wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+demucs>=4.0.1
+
+# Stage 2 — transcription.
+# The [onnx] extra runs the model on onnxruntime instead of TensorFlow: ~600 MB
+# smaller, and faster on CPU for a network this size. Use basic-pitch[tf] only
+# if you specifically need the TensorFlow backend.
+basic-pitch[onnx]>=0.4.0
+
+# Used directly by processor.py for durations and --preview trimming.
+# (librosa, numpy, pretty_midi and onnxruntime arrive with basic-pitch.)
+soundfile>=0.12.1

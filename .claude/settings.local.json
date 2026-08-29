@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -c \"import importlib.util as u; [print\\(f'{m}: {\\\\\"OK\\\\\" if u.find_spec\\(m\\) else \\\\\"missing\\\\\"}'\\) for m in ['torch','demucs','basic_pitch','tensorflow','librosa','soundfile','numpy','pretty_midi','onnxruntime']]\")",
+      "PowerShell(python \"C:\\\\Users\\\\cilli\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-cilli-OneDrive-Desktop-Bass\\\\d0c54a92-04b0-4728-91e2-c24f6784b7d6\\\\scratchpad\\\\check_deps.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\cilli\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-cilli-OneDrive-Desktop-Bass\\\\d0c54a92-04b0-4728-91e2-c24f6784b7d6\\\\scratchpad\\\\check_versions.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\cilli\\\\OneDrive\\\\Desktop\\\\Bass\\\\backend\\\\fretboard.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\cilli\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-cilli-OneDrive-Desktop-Bass\\\\d0c54a92-04b0-4728-91e2-c24f6784b7d6\\\\scratchpad\\\\probe.py\")",
+      "PowerShell(cd \"C:\\\\Users\\\\cilli\\\\OneDrive\\\\Desktop\\\\Bass\"; Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch '__pycache__' } | ForEach-Object { \"{0,8}  {1}\" -f $_.Length, $_.FullName.Replace\\(\"C:\\\\Users\\\\cilli\\\\OneDrive\\\\Desktop\\\\Bass\\\\\",\"\"\\) })",
+      "PowerShell(python -m pip install \"basic-pitch[onnx]\" 2>&1 | Select-Object -Last 25)"
+    ]
+  }
+}

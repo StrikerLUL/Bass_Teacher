@@ -1,0 +1,35 @@
+# Processed audio + transcriptions (large, and derived from copyrighted source)
+/data/
+backend/**/_demucs/
+backend/**/_preview/
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+# ...except the demo the app ships with
+!app/assets/sample/*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/pubspec.lock
+app/.packages
+app/ios/Pods/
+app/macos/Pods/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
