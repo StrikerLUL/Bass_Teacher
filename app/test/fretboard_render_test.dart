@@ -6,8 +6,9 @@ import 'package:bass_trainer/services/note_timeline.dart';
 import 'package:bass_trainer/services/playback_clock.dart';
 import 'package:bass_trainer/widgets/fretboard_view.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/fonts.dart';
 
 /// Renders the fretboard straight to a PNG so it can be inspected.
 ///
@@ -19,36 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final outDir = Platform.environment['BASS_RENDER_OUT'];
 
-  setUpAll(() async {
-    TestWidgetsFlutterBinding.ensureInitialized();
-    // Without real fonts the test renderer draws every glyph as a filled box.
-    // resolvedExecutable is <flutter>/bin/cache/dart-sdk/bin/dart.exe, so the
-    // material fonts sit two levels up in <flutter>/bin/cache/artifacts.
-    var dir = File(Platform.resolvedExecutable).parent;
-    Directory? fontDir;
-    for (var up = 0; up < 6 && fontDir == null; up++) {
-      final candidate = Directory('${dir.path}/artifacts/material_fonts');
-      if (candidate.existsSync()) fontDir = candidate;
-      dir = dir.parent;
-    }
-    expect(fontDir, isNotNull,
-        reason: 'material fonts not found - text would render as boxes');
-
-    final faces = fontDir!
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.toLowerCase().endsWith('.ttf'))
-        .where((f) => f.path.toLowerCase().contains('roboto'))
-        .toList();
-    expect(faces, isNotEmpty, reason: 'no Roboto faces in ${fontDir.path}');
-
-    final loader = FontLoader('Roboto');
-    for (final face in faces) {
-      loader.addFont(
-          Future.value(ByteData.view(face.readAsBytesSync().buffer)));
-    }
-    await loader.load();
-  });
+  setUpAll(loadTestFonts);
 
   Future<void> renderAt(String name, double seconds, {bool flip = false}) async {
     final text = File('assets/sample/demo_transcription.json').readAsStringSync();

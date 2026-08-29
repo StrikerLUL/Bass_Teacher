@@ -53,7 +53,35 @@ class TranscriptionJob extends ChangeNotifier {
     return null;
   }
 
-  Future<void> run({required String audioPath, bool preview = false}) async {
+  /// Separate and transcribe a song from scratch.
+  Future<void> run({required String audioPath, bool preview = false}) {
+    return _execute((processor, dataDir) => [
+          processor.path,
+          audioPath,
+          '-o', dataDir,
+          if (preview) ...['--preview', '30'],
+        ]);
+  }
+
+  /// Re-run transcription on a track that already has stems.
+  ///
+  /// Passing the cached stems skips Demucs, which is the slow stage — this
+  /// takes under a minute where a full run takes several.
+  Future<void> retranscribe(Directory trackDir) {
+    final bass = File(p.join(trackDir.path, 'bass.wav'));
+    final backing = File(p.join(trackDir.path, 'backing.wav'));
+    return _execute((processor, dataDir) => [
+          processor.path,
+          '--bass-stem', bass.path,
+          if (backing.existsSync()) ...['--backing-stem', backing.path],
+          '--name', p.basename(trackDir.path),
+          '-o', dataDir,
+        ]);
+  }
+
+  Future<void> _execute(
+    List<String> Function(File processor, String dataDir) buildArguments,
+  ) async {
     final processor = locateProcessor();
     if (processor == null) {
       _fail('Could not find backend/processor.py. Expected it next to the '
@@ -73,12 +101,7 @@ class TranscriptionJob extends ChangeNotifier {
     log.clear();
     notifyListeners();
 
-    final arguments = [
-      processor.path,
-      audioPath,
-      '-o', dataDir,
-      if (preview) ...['--preview', '30'],
-    ];
+    final arguments = buildArguments(processor, dataDir);
 
     Object? lastLaunchError;
     for (final interpreter in _interpreters) {
@@ -153,7 +176,7 @@ class TranscriptionJob extends ChangeNotifier {
     if (line.contains('demucs:')) {
       stage = 'Separating the bass — this is the slow part';
       progress = null;
-    } else if (line.contains('basic-pitch:')) {
+    } else if (line.contains('basic-pitch:') || line.contains('torchcrepe:')) {
       stage = 'Transcribing notes';
       progress = null;
     } else if (line.contains('octave fix')) {

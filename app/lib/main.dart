@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
-import 'screens/player_screen.dart';
+import 'screens/library_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,7 +29,7 @@ class BassTrainerApp extends StatelessWidget {
           overlayShape: RoundSliderOverlayShape(overlayRadius: 14),
         ),
       ),
-      home: const PlayerScreen(),
+      home: const LibraryScreen(),
     );
   }
 }

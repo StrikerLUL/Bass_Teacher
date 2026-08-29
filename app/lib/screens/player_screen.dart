@@ -1,10 +1,5 @@
-import 'dart:async';
-import 'dart:io';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter/services.dart' show rootBundle;
 
 import '../models/instrument.dart';
 import '../models/note_event.dart';
@@ -12,15 +7,17 @@ import '../models/transcription.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
-import '../services/transcription_job.dart';
-import '../widgets/process_dialogs.dart';
 import '../widgets/fretboard_view.dart';
 import '../widgets/transport_controls.dart';
 
-const String kSampleAsset = 'assets/sample/demo_transcription.json';
-
+/// Plays one already-loaded transcription.
+///
+/// The library owns finding, loading and processing tracks; this screen only
+/// has to render and play the one it is handed.
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key});
+  const PlayerScreen({super.key, required this.transcription});
+
+  final Transcription transcription;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -30,28 +27,40 @@ class _PlayerScreenState extends State<PlayerScreen>
     with SingleTickerProviderStateMixin {
   late final PlaybackClock _clock = PlaybackClock();
   late final StemPlayer _player = StemPlayer(_clock);
+  late final FretboardViewModel _viewModel;
   Ticker? _ticker;
   Duration _lastFrame = Duration.zero;
-
-  Transcription? _transcription;
-  FretboardViewModel? _viewModel;
-  String? _error;
-  bool _loading = true;
+  bool _loadingAudio = true;
 
   @override
   void initState() {
     super.initState();
+    _clock.duration = widget.transcription.duration;
+    _viewModel = FretboardViewModel(
+      timeline: NoteTimeline(widget.transcription.notes),
+      instrument: widget.transcription.instrument,
+      clock: _clock,
+    );
     _ticker = createTicker(_onFrame)..start();
-    _loadSample();
+    _loadAudio();
   }
 
   @override
   void dispose() {
     _ticker?.dispose();
-    _viewModel?.dispose();
+    _viewModel.dispose();
     _player.dispose();
     _clock.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadAudio() async {
+    await _player.load(
+      bassPath: widget.transcription.bassStemPath,
+      backingPath: widget.transcription.backingStemPath,
+      fallbackDuration: widget.transcription.duration,
+    );
+    if (mounted) setState(() => _loadingAudio = false);
   }
 
   /// One vsync: advance the clock, then let the fretboard restate itself.
@@ -70,200 +79,43 @@ class _PlayerScreenState extends State<PlayerScreen>
       _player.pause();
     }
 
-    // Cap dt so a dropped frame or a backgrounded window does not teleport the
-    // scrolling neck.
-    _viewModel?.advance(dt.clamp(0.0, 0.1));
-  }
-
-  Future<void> _loadSample() async {
-    try {
-      final text = await rootBundle.loadString(kSampleAsset);
-      await _apply(Transcription.parse(text, title: 'Demo riff'));
-    } catch (error) {
-      if (mounted) setState(() => _error = '$error');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _openFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['json'],
-      dialogTitle: 'Open a transcription.json',
-    );
-    final path = result?.files.single.path;
-    if (path == null) return;
-
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      await _apply(await Transcription.load(File(path)));
-    } catch (error) {
-      if (mounted) setState(() => _error = 'Could not open that file: $error');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  /// Pick a song, run the Python pipeline on it, then load the result.
-  Future<void> _processSong() async {
-    if (TranscriptionJob.locateProcessor() == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Could not find backend/processor.py next to the app.'),
-      ));
-      return;
-    }
-
-    final picked = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: TranscriptionJob.audioExtensions,
-      dialogTitle: 'Choose a song to transcribe',
-    );
-    final audioPath = picked?.files.single.path;
-    if (audioPath == null || !mounted) return;
-
-    final preview = await askProcessingOptions(context, audioPath);
-    if (preview == null || !mounted) return;
-
-    final job = TranscriptionJob();
-    unawaited(job.run(audioPath: audioPath, preview: preview));
-    final ok = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => ProcessingDialog(job: job),
-    );
-
-    final result = job.resultPath;
-    job.dispose();
-    if (ok != true || result == null || !mounted) return;
-
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      await _apply(await Transcription.load(File(result)));
-    } catch (error) {
-      if (mounted) setState(() => _error = 'Could not open the result: $error');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _apply(Transcription transcription) async {
-    await _player.pause();
-    _clock.seekTo(0);
-    _clock.duration = transcription.duration;
-
-    final previous = _viewModel;
-    final next = FretboardViewModel(
-      timeline: NoteTimeline(transcription.notes),
-      instrument: transcription.instrument,
-      clock: _clock,
-    );
-    if (previous != null) next.lowStringOnTop = previous.lowStringOnTop;
-
-    if (mounted) {
-      setState(() {
-        _transcription = transcription;
-        _viewModel = next;
-      });
-    }
-    previous?.dispose();
-
-    await _player.load(
-      bassPath: transcription.bassStemPath,
-      backingPath: transcription.backingStemPath,
-      fallbackDuration: transcription.duration,
-    );
-    if (mounted) setState(() {});
+    // Cap dt so a dropped frame or a backgrounded window does not jump the view.
+    _viewModel.advance(dt.clamp(0.0, 0.1));
   }
 
   @override
   Widget build(BuildContext context) {
-    final transcription = _transcription;
-    final viewModel = _viewModel;
-
     return Scaffold(
       appBar: AppBar(
-        title: Text(transcription?.title ?? 'Bass Trainer'),
+        title: Text(widget.transcription.title),
         actions: [
-          if (viewModel != null)
-            IconButton(
-              tooltip: viewModel.lowStringOnTop
-                  ? 'Low string on top — switch to tab layout'
-                  : 'Tab layout (G on top) — switch to low string on top',
-              icon: const Icon(Icons.swap_vert),
-              onPressed: () => setState(
-                () => viewModel.lowStringOnTop = !viewModel.lowStringOnTop,
-              ),
+          IconButton(
+            tooltip: _viewModel.lowStringOnTop
+                ? 'Low string on top — switch to tab layout'
+                : 'Tab layout (G on top) — switch to low string on top',
+            icon: const Icon(Icons.swap_vert),
+            onPressed: () => setState(
+              () => _viewModel.lowStringOnTop = !_viewModel.lowStringOnTop,
             ),
-          IconButton(
-            tooltip: 'Add a song — separate the bass and transcribe it',
-            icon: const Icon(Icons.library_music),
-            onPressed: _loading ? null : _processSong,
-          ),
-          IconButton(
-            tooltip: 'Open an existing transcription.json',
-            icon: const Icon(Icons.folder_open),
-            onPressed: _loading ? null : _openFile,
           ),
         ],
       ),
-      body: _buildBody(context, transcription, viewModel),
-    );
-  }
-
-  Widget _buildBody(
-    BuildContext context,
-    Transcription? transcription,
-    FretboardViewModel? viewModel,
-  ) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, size: 40),
-              const SizedBox(height: 12),
-              Text(_error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: _openFile,
-                child: const Text('Open a transcription'),
-              ),
-            ],
+      body: Column(
+        children: [
+          if (!_loadingAudio && !widget.transcription.hasAudio)
+            const _SilentModeBanner(),
+          Expanded(child: FretboardView(viewModel: _viewModel)),
+          _NoteReadout(viewModel: _viewModel),
+          TransportControls(
+            clock: _clock,
+            player: _player,
+            onSeek: (value) => _player.seek(value),
+            onTogglePlay: () => _player.togglePlay(),
+            onRateChanged: (rate) => _player.setRate(rate),
+            onMixChanged: () => setState(() {}),
           ),
-        ),
-      );
-    }
-
-    if (transcription == null || viewModel == null) {
-      return const Center(child: Text('Nothing loaded.'));
-    }
-
-    return Column(
-      children: [
-        if (!transcription.hasAudio) const _SilentModeBanner(),
-        Expanded(child: FretboardView(viewModel: viewModel)),
-        _NoteReadout(viewModel: viewModel),
-        TransportControls(
-          clock: _clock,
-          player: _player,
-          onSeek: (value) => _player.seek(value),
-          onTogglePlay: () => _player.togglePlay(),
-          onRateChanged: (rate) => _player.setRate(rate),
-          onMixChanged: () => setState(() {}),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -280,7 +132,7 @@ class _SilentModeBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Text(
         'No stems for this transcription — the fretboard is running on the '
-        'internal clock. Use the ♫ button above to add a song.',
+        'internal clock.',
         style: TextStyle(color: scheme.onSecondaryContainer, fontSize: 12),
       ),
     );
@@ -294,7 +146,8 @@ class _NoteReadout extends StatelessWidget {
   final FretboardViewModel viewModel;
 
   String _stringName(int index) =>
-      midiToName(viewModel.instrument.tuningMidi[index]).replaceAll(RegExp(r'\d'), '');
+      midiToName(viewModel.instrument.tuningMidi[index])
+          .replaceAll(RegExp(r'\d'), '');
 
   @override
   Widget build(BuildContext context) {
@@ -306,7 +159,8 @@ class _NoteReadout extends StatelessWidget {
         final next = viewModel.next;
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
+          color:
+              theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
           child: Row(
             children: [
               _NoteChip(viewModel: viewModel, note: current, label: 'NOW'),
@@ -314,17 +168,16 @@ class _NoteReadout extends StatelessWidget {
               if (next != null)
                 Opacity(
                   opacity: 0.62,
-                  child: _NoteChip(
-                      viewModel: viewModel, note: next, label: 'NEXT'),
+                  child:
+                      _NoteChip(viewModel: viewModel, note: next, label: 'NEXT'),
                 ),
               const Spacer(),
               if (current != null && current.string != null)
                 Text(
                   '${_stringName(current.string!)} string'
                   '${current.fret == 0 ? '  ·  open' : '  ·  fret ${current.fret}'}',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
                 ),
             ],
           ),
@@ -350,9 +203,8 @@ class _NoteChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final string = note?.string;
-    final colour = string == null
-        ? theme.colorScheme.outline
-        : stringColour(string);
+    final colour =
+        string == null ? theme.colorScheme.outline : stringColour(string);
     final stringName = string == null
         ? '—'
         : midiToName(viewModel.instrument.tuningMidi[string])
@@ -394,10 +246,8 @@ class _NoteChip extends StatelessWidget {
           children: [
             Text(
               note?.name ?? 'rest',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-                height: 1.1,
-              ),
+              style: theme.textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700, height: 1.1),
             ),
             Text(
               note == null

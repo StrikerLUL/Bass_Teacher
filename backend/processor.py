@@ -840,10 +840,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # ---- stage 5: document --------------------------------------------------
     duration, sample_rate = audio_info(bass_path)
+
+    # Transcribing from a stem means `source` is "bass.wav", which is not the
+    # song's name. Keep whatever a previous run in this folder recorded, and
+    # fall back to the track name rather than labelling the track after a stem.
+    display_name = source.name
+    if args.bass_stem:
+        previous = out_dir / "transcription.json"
+        prior_name = None
+        if previous.exists():
+            try:
+                prior = json.loads(previous.read_text(encoding="utf-8"))
+                prior_name = (prior.get("source") or {}).get("file")
+            except (OSError, ValueError):
+                prior_name = None
+        # Never inherit a stem filename as the song's title.
+        if prior_name in (DEMUCS_BASS_STEM, "backing.wav", DEMUCS_OTHER_STEM):
+            prior_name = None
+        display_name = prior_name or track
+
     document = build_document(
         events,
         instrument=instrument,
-        source=source,
+        source=Path(display_name),
         duration=duration,
         sample_rate=sample_rate,
         bass_rel=_relative(bass_path, out_dir),

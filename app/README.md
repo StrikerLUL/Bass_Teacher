@@ -30,6 +30,17 @@ Needs Flutter **3.27+** (the code uses `Color.withValues`).
 flutter test
 ```
 
+## Screens
+
+`LibraryScreen` is home: every track in `data/` as a card showing duration, note
+count, peak notes/sec, which stems exist, the engine used and the tuning.
+Tapping one loads it and pushes `PlayerScreen` on top. The card menu offers
+**Re-transcribe** — which passes the cached stems to `processor.py` so Demucs,
+the slow stage, is skipped — and **Delete**.
+
+`PlayerScreen` now only plays the transcription it is handed; finding, loading
+and processing tracks all belong to the library.
+
 ## What talks to what
 
 ```
