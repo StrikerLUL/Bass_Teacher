@@ -4,7 +4,13 @@
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124
 demucs>=4.0.1
 
-# Stage 2 — transcription.
+# Stage 2 — transcription, default engine.
+# CREPE tracks a single f0 per frame, which is what a separated bass stem is.
+# Measured against the bass stem's own spectrum it beat Basic Pitch on harmonic
+# fit, octave errors, onset recall and playability -- see compare_engines.py.
+torchcrepe>=0.0.20
+
+# Stage 2 — alternative engine (--engine basic-pitch).
 # The [onnx] extra runs the model on onnxruntime instead of TensorFlow: ~600 MB
 # smaller, and faster on CPU for a network this size. Use basic-pitch[tf] only
 # if you specifically need the TensorFlow backend.

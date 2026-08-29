@@ -8,7 +8,7 @@
 
 Stages
     1. Demucs (htdemucs)       -> bass.wav + backing.wav
-    2. Basic Pitch (ICASSP22)  -> raw note events
+    2. torchcrepe (or Basic Pitch, --engine) -> raw note events
     3. Clean-up                -> de-ghosted, monophonic, in-range notes
     4. fretboard.py            -> string/fret per note (minimal hand travel)
     5. JSON                    -> consumed by the Flutter app
@@ -234,10 +234,26 @@ def separate(
 
 
 # --------------------------------------------------------------------------- #
-# Stage 2 — Basic Pitch
+# Stage 2 — Transcription
 # --------------------------------------------------------------------------- #
 
-def transcribe(
+ENGINES = ("basic-pitch", "torchcrepe")
+
+
+def _pitch_window(
+    instrument: Instrument, min_freq: Optional[float], max_freq: Optional[float]
+) -> Tuple[float, float]:
+    """Bound the search to what the instrument can actually produce.
+
+    This is the single most effective guard against octave-up ghosts on low,
+    harmonically rich bass notes.
+    """
+    low = min_freq if min_freq is not None else midi_to_hz(instrument.lowest_midi) * 0.97
+    high = max_freq if max_freq is not None else midi_to_hz(instrument.highest_midi) * 1.03
+    return low, high
+
+
+def transcribe_basic_pitch(
     bass_path: Path,
     *,
     instrument: Instrument,
@@ -246,7 +262,7 @@ def transcribe(
     min_note_ms: float,
     min_freq: Optional[float],
     max_freq: Optional[float],
-) -> Tuple[List[Tuple[Any, ...]], Any]:
+) -> List[NoteEvent]:
     if find_spec("basic_pitch") is None:
         fail(
             "basic-pitch is not installed.",
@@ -256,16 +272,11 @@ def transcribe(
     from basic_pitch import ICASSP_2022_MODEL_PATH
     from basic_pitch.inference import predict
 
-    # Bound the search to what the instrument can actually produce.  This is
-    # the single most effective guard against Basic Pitch's octave-up ghosts on
-    # low, harmonically rich bass notes.
-    low = min_freq if min_freq is not None else midi_to_hz(instrument.lowest_midi) * 0.97
-    high = max_freq if max_freq is not None else midi_to_hz(instrument.highest_midi) * 1.03
-
+    low, high = _pitch_window(instrument, min_freq, max_freq)
     log(f"basic-pitch: {low:.1f}–{high:.1f} Hz, onset={onset_threshold}, "
         f"frame={frame_threshold}, min_note={min_note_ms:g}ms")
 
-    _model_output, midi_data, note_events = predict(
+    _model_output, _midi, note_events = predict(
         str(bass_path),
         ICASSP_2022_MODEL_PATH,
         onset_threshold=onset_threshold,
@@ -277,7 +288,163 @@ def transcribe(
         melodia_trick=True,
     )
     log(f"basic-pitch: {len(note_events)} raw note events")
-    return list(note_events), midi_data
+    return to_events(note_events)
+
+
+def crepe_floor_hz() -> float:
+    """The lowest fmin torchcrepe can be given safely.
+
+    CREPE's bin 0 sits at about 31.7 Hz. Ask for anything below it and
+    ``frequency_to_bins`` returns a *negative* index, which torchcrepe then uses
+    as ``probabilities[:, :minidx]`` — a negative slice that blanks almost every
+    bin instead of none. The result is not an error: every frame comes back with
+    -inf periodicity and a pitch pinned to the bottom of the range.
+    """
+    import torch
+    import torchcrepe
+
+    low, high = 10.0, 80.0
+    for _ in range(50):
+        mid = 0.5 * (low + high)
+        if int(torchcrepe.convert.frequency_to_bins(torch.tensor(mid))) < 0:
+            low = mid
+        else:
+            high = mid
+    return high
+
+
+def transcribe_torchcrepe(
+    bass_path: Path,
+    *,
+    instrument: Instrument,
+    min_note_ms: float,
+    min_freq: Optional[float],
+    max_freq: Optional[float],
+    periodicity: float,
+    hop_ms: float,
+    model: str,
+    device: str,
+) -> List[NoteEvent]:
+    """Monophonic pitch tracking, which is what an isolated bass stem is.
+
+    Basic Pitch is a general polyphonic transcriber; CREPE only ever reports one
+    f0 per frame. That is a better match for a separated bass, but it means this
+    path cannot represent a double-stop at all.
+    """
+    for module in ("torchcrepe", "librosa", "numpy"):
+        if find_spec(module) is None:
+            fail(
+                f"{module} is not installed.",
+                "pip install torchcrepe   (or run with --engine basic-pitch)",
+            )
+
+    import librosa
+    import numpy as np
+    import torch
+    import torchcrepe
+
+    low, high = _pitch_window(instrument, min_freq, max_freq)
+    floor = crepe_floor_hz()
+    if low < floor:
+        log(f"torchcrepe: raising fmin {low:.1f} -> {floor * 1.02:.1f} Hz "
+            f"(CREPE's lowest bin; below it the whole spectrum is masked out)")
+        low = floor * 1.02
+    high = min(high, float(torchcrepe.MAX_FMAX))
+
+    rate = torchcrepe.SAMPLE_RATE
+    audio, _ = librosa.load(str(bass_path), sr=rate, mono=True)
+    hop = max(1, int(round(rate * hop_ms / 1000.0)))
+
+    log(f"torchcrepe: {model} model on {device}, {low:.1f}–{high:.1f} Hz, "
+        f"hop={hop_ms:g}ms, periodicity>={periodicity}")
+
+    pitch, confidence = torchcrepe.predict(
+        torch.from_numpy(audio).unsqueeze(0),
+        rate,
+        hop_length=hop,
+        fmin=low,
+        fmax=high,
+        model=model,
+        return_periodicity=True,
+        batch_size=1024,
+        device=device,
+    )
+    # A single dropped frame is analysis noise, not phrasing.
+    confidence = torchcrepe.filter.median(confidence, 3)
+    pitch = torchcrepe.filter.mean(pitch, 3)
+
+    f0 = pitch.squeeze(0).cpu().numpy()
+    conf = confidence.squeeze(0).cpu().numpy()
+    semitones = librosa.hz_to_midi(np.clip(f0, 1e-6, None))
+    voiced = np.isfinite(conf) & np.isfinite(semitones) & (conf >= periodicity)
+    log(f"torchcrepe: {int(voiced.sum())}/{len(f0)} voiced frames")
+
+    energy = librosa.feature.rms(y=audio, frame_length=2048, hop_length=hop)[0]
+
+    events: List[NoteEvent] = []
+    seg_start = -1
+    seg_pitch = 0.0
+    seg_values: List[float] = []
+
+    def flush(end_index: int) -> None:
+        if seg_start < 0 or not seg_values:
+            return
+        start_t = seg_start * hop / rate
+        end_t = end_index * hop / rate
+        if end_t - start_t < min_note_ms / 1000.0:
+            return
+        span = energy[seg_start:max(seg_start + 1, min(end_index, len(energy)))]
+        events.append(NoteEvent(
+            start=start_t,
+            end=end_t,
+            midi=int(round(float(np.median(seg_values)))),
+            velocity=float(np.mean(span)) if len(span) else 1.0,
+        ))
+
+    # A note runs while the tracked pitch stays within half a semitone of where
+    # it started; anything further is a new note, not vibrato.
+    for i in range(len(f0) + 1):
+        active = i < len(f0) and bool(voiced[i])
+        if active and seg_start >= 0 and abs(semitones[i] - seg_pitch) < 0.6:
+            seg_values.append(float(semitones[i]))
+            continue
+        flush(i)
+        if active:
+            seg_start = i
+            seg_pitch = float(round(semitones[i]))
+            seg_values = [float(semitones[i])]
+        else:
+            seg_start = -1
+            seg_values = []
+
+    peak = max((n.velocity for n in events), default=0.0)
+    if peak > 0:
+        for note in events:
+            note.velocity = min(1.0, note.velocity / peak)
+
+    log(f"torchcrepe: {len(events)} raw note events")
+    return events
+
+
+def write_midi(events: Sequence[NoteEvent], path: Path) -> None:
+    """Write the transcription as MIDI, matching the JSON exactly."""
+    if find_spec("pretty_midi") is None:
+        return
+    import pretty_midi
+
+    midi = pretty_midi.PrettyMIDI()
+    track = pretty_midi.Instrument(
+        program=pretty_midi.instrument_name_to_program("Electric Bass (finger)")
+    )
+    for note in events:
+        track.notes.append(pretty_midi.Note(
+            velocity=int(max(1, min(127, round(note.velocity * 127)))),
+            pitch=note.midi,
+            start=note.start,
+            end=max(note.end, note.start + 0.01),
+        ))
+    midi.instruments.append(track)
+    midi.write(str(path))
 
 
 # --------------------------------------------------------------------------- #
@@ -535,6 +702,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                        help="only process the first N seconds")
 
     group = parser.add_argument_group("transcription")
+    group.add_argument("--engine", choices=ENGINES, default="torchcrepe",
+                       help="basic-pitch is polyphonic and general; torchcrepe "
+                            "tracks a single f0, which is what a bass stem is")
+    group.add_argument("--crepe-model", default="full", choices=["tiny", "full"],
+                       help="torchcrepe network size")
+    group.add_argument("--periodicity", type=float, default=0.20,
+                       help="torchcrepe voicing threshold; lower keeps more notes. "
+                            "0.20 measured best on the one song this was tuned on")
+    group.add_argument("--crepe-hop-ms", type=float, default=10.0,
+                       help="torchcrepe analysis hop")
     group.add_argument("--onset-threshold", type=float, default=0.5,
                        help="lower finds more note starts (and more false ones)")
     group.add_argument("--frame-threshold", type=float, default=0.3,
@@ -610,23 +787,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     # ---- stage 2: transcription --------------------------------------------
-    raw, midi_data = transcribe(
-        bass_path,
-        instrument=instrument,
-        onset_threshold=args.onset_threshold,
-        frame_threshold=args.frame_threshold,
-        min_note_ms=args.min_note_ms,
-        min_freq=args.min_freq,
-        max_freq=args.max_freq,
-    )
-    if midi_data is not None:
-        try:
-            midi_data.write(str(out_dir / "bass.mid"))
-        except Exception as exc:  # non-fatal: the JSON is the real output
-            log(f"warning: could not write bass.mid ({exc})")
+    if args.engine == "torchcrepe":
+        events = transcribe_torchcrepe(
+            bass_path,
+            instrument=instrument,
+            min_note_ms=args.min_note_ms,
+            min_freq=args.min_freq,
+            max_freq=args.max_freq,
+            periodicity=args.periodicity,
+            hop_ms=args.crepe_hop_ms,
+            model=args.crepe_model,
+            device=pick_device(args.device),
+        )
+    else:
+        events = transcribe_basic_pitch(
+            bass_path,
+            instrument=instrument,
+            onset_threshold=args.onset_threshold,
+            frame_threshold=args.frame_threshold,
+            min_note_ms=args.min_note_ms,
+            min_freq=args.min_freq,
+            max_freq=args.max_freq,
+        )
 
     # ---- stage 3: clean-up --------------------------------------------------
-    events = to_events(raw)
+    events.sort(key=lambda n: (n.start, n.midi))
     before = len(events)
     events = drop_short(events, args.min_note_ms / 1000.0)
     events = remove_octave_ghosts(
@@ -664,17 +849,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         bass_rel=_relative(bass_path, out_dir),
         backing_rel=_relative(backing_path, out_dir) if backing_path else None,
         settings={
-            "model": "basic-pitch ICASSP 2022",
+            "model": args.engine,
             "onset_threshold": args.onset_threshold,
             "frame_threshold": args.frame_threshold,
             "min_note_ms": args.min_note_ms,
             "monophonic": not args.polyphonic,
+            "engine": args.engine,
             "separator": None if args.bass_stem else f"demucs {args.model}",
         },
     )
 
     json_path = out_dir / "transcription.json"
     json_path.write_text(dump_json(document), encoding="utf-8")
+    try:
+        write_midi(events, out_dir / "bass.mid")
+    except Exception as exc:  # non-fatal: the JSON is the real output
+        log(f"warning: could not write bass.mid ({exc})")
 
     log(f"wrote {json_path}")
     print("\nstats")

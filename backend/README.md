@@ -53,6 +53,48 @@ already there — pass `--force` to redo it.
 
 `--help` lists every knob.
 
+## Which engine
+
+`--engine torchcrepe` (default) or `--engine basic-pitch`.
+
+CREPE tracks a single f0 per frame; Basic Pitch is a general polyphonic
+transcriber. A separated bass stem is monophonic, so CREPE is the better fit —
+and `compare_engines.py` measures that rather than assuming it:
+
+```powershell
+python compare_engines.py ../data/<track>/bass.wav `
+  basic-pitch=../data/a/transcription.json torchcrepe=../data/b/transcription.json
+```
+
+Measured on a 4-minute J-Pop track, scoring each transcription against the bass
+stem's own spectrum:
+
+| metric | basic-pitch | torchcrepe |
+|---|---|---|
+| harmonic fit (higher better) | 0.309 | **0.370** |
+| octave errors (lower better) | 0.8% | **0.0%** |
+| onset recall (higher better) | 56.4% | **57.9%** |
+| onset precision (higher better) | **71.1%** | 68.0% |
+| frame coverage (higher better) | **77.2%** | 72.0% |
+| spurious notes (lower better) | 6.0% | **5.0%** |
+| max fret jump (lower better) | 19 | **9** |
+| mean fret jump (lower better) | 1.59 | **1.18** |
+
+Basic Pitch wins frame coverage, but that is sustain length rather than extra
+detections — its notes occupy 66% of the track against CREPE's 61%, while CREPE
+finds *more* actual note onsets. The 19-fret hand jump it produced came from
+isolated stray notes that CREPE does not emit at all.
+
+Caveats worth knowing: torchcrepe takes ~45 s for a 4-minute song against ~7 s
+for Basic Pitch, it cannot represent a double-stop, and `--periodicity 0.20` was
+tuned on a single track. Use `--engine basic-pitch` for polyphonic bass parts.
+
+**A trap if you change the frequency range:** CREPE's lowest bin is 31.7 Hz. Ask
+torchcrepe for anything below it and the internal mask uses a negative index,
+blanking nearly every bin — every frame comes back with `-inf` periodicity and
+no error. `processor.py` raises `fmin` to that floor and logs when it does, which
+matters for 5-string tunings (B0 is 30.9 Hz, below what CREPE can see).
+
 ## When the transcription is wrong
 
 The clean-up stage exists because raw Basic Pitch output on bass has four
