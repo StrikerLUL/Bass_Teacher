@@ -26,6 +26,7 @@ List<NoteEvent> buildRiff() {
 }
 
 void main() {
+  styleTests();
   const bass = Instrument.bassStandard;
 
   group('positionsFor', () {
@@ -180,6 +181,68 @@ void main() {
       ];
       FretboardMapper(bass).annotateHandPositions(notes);
       expect(notes.map((n) => n.hand), everyElement(7));
+    });
+  });
+}
+
+void styleTests() {
+  const bass = Instrument.bassStandard;
+
+  /// The Seven Nation Army riff: E2 E2 G2 E2 D2 C2 B1.
+  List<NoteEvent> riff() {
+    final pitches = [40, 40, 43, 40, 38, 36, 35];
+    var time = 0.0;
+    return [
+      for (final p in pitches)
+        NoteEvent(start: time, end: (time += 0.5) - 0.1, midi: p),
+    ];
+  }
+
+  String tab(List<NoteEvent> notes) {
+    const names = ['E', 'A', 'D', 'G'];
+    return notes.map((n) => '${names[n.string!]}${n.fret}').join(' ');
+  }
+
+  group('FingeringStyle', () {
+    test('least movement takes open strings and crosses freely', () {
+      final notes = riff();
+      FretboardMapper(bass,
+              FingeringConfig.forStyle(FingeringStyle.leastMovement))
+          .assign(notes);
+      expect(tab(notes), 'D2 D2 G0 D2 D0 A3 A2');
+    });
+
+    test('one-string style reproduces the fingering tutorials teach', () {
+      // Same notes, all on the A string — what a teacher demonstrates, and
+      // what this app disagreed with until the style became a choice.
+      final notes = riff();
+      FretboardMapper(bass, FingeringConfig.forStyle(FingeringStyle.oneString))
+          .assign(notes);
+      expect(tab(notes), 'A7 A7 A10 A7 A5 A3 A2');
+      expect(notes.map((n) => n.string).toSet().length, 1,
+          reason: 'the whole riff should sit on one string');
+    });
+
+    test('a preferred fret pulls the part to that position', () {
+      final notes = riff();
+      FretboardMapper(
+        bass,
+        FingeringConfig.forStyle(FingeringStyle.oneString, preferredFret: 12),
+      ).assign(notes);
+      // Pinned high, the same riff moves to the E string around fret 12.
+      expect(notes.first.string, 0);
+      expect(notes.first.fret, 12);
+    });
+
+    test('every style still produces the right pitches', () {
+      for (final style in FingeringStyle.values) {
+        final notes = riff();
+        FretboardMapper(bass, FingeringConfig.forStyle(style)).assign(notes);
+        for (final note in notes) {
+          expect(bass.midiAt(note.string!, note.fret!), note.midi,
+              reason: 'style $style produced a wrong pitch');
+        }
+      }
     });
   });
 }

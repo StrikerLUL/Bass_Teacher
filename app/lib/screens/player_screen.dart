@@ -8,6 +8,7 @@ import '../models/note_event.dart';
 import '../models/tempo_grid.dart';
 import '../models/transcription.dart';
 import '../services/app_settings.dart';
+import '../services/fretboard_mapper.dart';
 import '../services/loop_controller.dart';
 import '../services/mic_listener.dart';
 import '../services/pitch_detector.dart';
@@ -18,6 +19,7 @@ import '../services/stem_player.dart';
 import '../widgets/beat_ruler.dart';
 import '../widgets/calibration_dialog.dart';
 import '../widgets/loop_controls.dart';
+import '../widgets/fingering_dialog.dart';
 import '../widgets/loop_seek_bar.dart';
 import '../widgets/score_strip.dart';
 import '../widgets/fretboard_view.dart';
@@ -51,6 +53,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   MicListener? _mic;
   StreamSubscription<PitchReading>? _readings;
   SectionScore? _lastSectionScore;
+  FingeringStyle _style = FingeringStyle.leastMovement;
+  int? _preferredFret;
 
   /// Identifies this track in the settings file, for a manual tempo.
   String get _trackKey => widget.transcription.sourcePath ?? widget.transcription.title;
@@ -65,6 +69,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       instrument: widget.transcription.instrument,
       clock: _clock,
     )..lowStringOnTop = AppSettings.instance.lowStringOnTop;
+    final saved = AppSettings.instance.fingeringChoice(_trackKey);
+    if (saved != null && saved.style < FingeringStyle.values.length) {
+      _style = FingeringStyle.values[saved.style];
+      _preferredFret = saved.fret;
+      _applyFingering();
+    }
     _scorer = PracticeScorer(timeline: NoteTimeline(widget.transcription.notes));
     _grid = _resolveGrid();
     _ticker = createTicker(_onFrame)..start();
@@ -82,6 +92,40 @@ class _PlayerScreenState extends State<PlayerScreen>
     _player.dispose();
     _clock.dispose();
     super.dispose();
+  }
+
+  /// Re-solve where every note sits on the neck, in the chosen style.
+  void _applyFingering() {
+    final mapper = FretboardMapper(
+      widget.transcription.instrument,
+      FingeringConfig.forStyle(_style, preferredFret: _preferredFret),
+    );
+    final notes = widget.transcription.notes;
+    mapper.assign(notes);
+    mapper.annotateHandPositions(notes);
+    mapper.assignFingers(notes);
+  }
+
+  Future<void> _editFingering() async {
+    final choice = await showDialog<FingeringChoice>(
+      context: context,
+      builder: (context) => FingeringDialog(
+        style: _style,
+        preferredFret: _preferredFret,
+        trackDir: trackDirectoryFor(widget.transcription.sourcePath),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    setState(() {
+      _style = choice.style;
+      _preferredFret = choice.preferredFret;
+      _applyFingering();
+    });
+    await AppSettings.instance.setFingeringChoice(
+      _trackKey,
+      FingeringStyle.values.indexOf(_style),
+      _preferredFret,
+    );
   }
 
   /// Start or stop scoring what is played against the transcription.
@@ -252,6 +296,11 @@ class _PlayerScreenState extends State<PlayerScreen>
             icon: Icon((_mic?.isRunning ?? false) ? Icons.mic : Icons.mic_none),
             isSelected: _mic?.isRunning ?? false,
             onPressed: _toggleListening,
+          ),
+          IconButton(
+            tooltip: 'Fingering style and reference files',
+            icon: const Icon(Icons.back_hand_outlined),
+            onPressed: _editFingering,
           ),
           IconButton(
             tooltip: 'Tempo and bar lines',

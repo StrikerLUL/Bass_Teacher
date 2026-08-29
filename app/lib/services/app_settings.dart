@@ -22,6 +22,7 @@ class AppSettings extends ChangeNotifier {
   bool _snapSeekToBars = true;
   double _inputOffset = 0.0;
   final Map<String, ({double bpm, double firstBeat})> _tempoOverrides = {};
+  final Map<String, ({int style, int? fret})> _fingeringChoices = {};
   bool _loaded = false;
 
   bool get isLoaded => _loaded;
@@ -44,6 +45,16 @@ class AppSettings extends ChangeNotifier {
   /// transcription itself.
   ({double bpm, double firstBeat})? tempoOverride(String key) =>
       _tempoOverrides[key];
+
+  /// Which fingering style a track was last set to, by transcription path.
+  ({int style, int? fret})? fingeringChoice(String key) =>
+      _fingeringChoices[key];
+
+  Future<void> setFingeringChoice(String key, int style, int? fret) async {
+    _fingeringChoices[key] = (style: style, fret: fret);
+    notifyListeners();
+    await save();
+  }
 
   /// Set by tests so they never touch the real user config.
   @visibleForTesting
@@ -84,6 +95,18 @@ class AppSettings extends ChangeNotifier {
                 firstBeat: (value['first_beat'] as num?)?.toDouble() ?? 0.0,
               );
             }
+          }
+        });
+      }
+      _fingeringChoices.clear();
+      final fingering = document['fingering'];
+      if (fingering is Map) {
+        fingering.forEach((key, value) {
+          if (value is Map && value['style'] is num) {
+            _fingeringChoices['$key'] = (
+              style: (value['style'] as num).toInt(),
+              fret: (value['fret'] as num?)?.toInt(),
+            );
           }
         });
       }
@@ -144,6 +167,10 @@ class AppSettings extends ChangeNotifier {
         'low_string_on_top': _lowStringOnTop,
         'snap_seek_to_bars': _snapSeekToBars,
         'input_offset_sec': double.parse(_inputOffset.toStringAsFixed(4)),
+        'fingering': {
+          for (final entry in _fingeringChoices.entries)
+            entry.key: {'style': entry.value.style, 'fret': entry.value.fret}
+        },
         'tempo_overrides': {
           for (final entry in _tempoOverrides.entries)
             entry.key: {
@@ -165,6 +192,7 @@ class AppSettings extends ChangeNotifier {
     _snapSeekToBars = true;
     _inputOffset = 0.0;
     _tempoOverrides.clear();
+    _fingeringChoices.clear();
     _loaded = false;
   }
 }

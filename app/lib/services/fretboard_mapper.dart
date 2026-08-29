@@ -3,6 +3,25 @@ import 'dart:math' as math;
 import '../models/instrument.dart';
 import '../models/note_event.dart';
 
+/// How to choose between the several places a note can be played.
+///
+/// A pitch does not have one home on a bass: E2 sits at string 0 fret 12,
+/// string 1 fret 7 or string 2 fret 2, and all three are correct. Which one a
+/// player uses is a preference, not a fact, which is why a tutorial and this
+/// app can disagree while both being right.
+enum FingeringStyle {
+  /// Move the hand as little as possible, and take open strings when they are
+  /// free. Comfortable, but it wanders across strings.
+  leastMovement,
+
+  /// Keep to one string wherever possible. This is what most tutorials teach:
+  /// even tone, and one shape to memorise. Costs more hand travel.
+  oneString,
+
+  /// Stay low on the neck and use open strings heavily.
+  openPosition,
+}
+
 /// Cost weights for the fingering search. Mirrors `backend/fretboard.py`.
 class FingeringConfig {
   const FingeringConfig({
@@ -22,7 +41,33 @@ class FingeringConfig {
     this.handWindowSec = 0.75,
     this.fingerSpan = 4,
     this.fingerStretch = 1,
+    this.preferredFret,
+    this.positionWeight = 0.35,
   });
+
+  /// Preset weights for each style, optionally pinned near a fret.
+  factory FingeringConfig.forStyle(FingeringStyle style, {int? preferredFret}) {
+    switch (style) {
+      case FingeringStyle.oneString:
+        // Crossing strings dominates everything else, so a phrase settles onto
+        // whichever single string can carry it most cheaply. Open strings lose
+        // their bonus, since taking one means leaving the string.
+        return FingeringConfig(
+          stringCost: 3.0,
+          openStringBonus: 0.6,
+          preferredFret: preferredFret,
+        );
+      case FingeringStyle.openPosition:
+        return FingeringConfig(
+          fretCost: 0.14,
+          openStringBonus: -0.9,
+          preferredFret: preferredFret ?? 0,
+          positionWeight: 0.25,
+        );
+      case FingeringStyle.leastMovement:
+        return FingeringConfig(preferredFret: preferredFret);
+    }
+  }
 
   final int? maxFret;
   final double moveCost;
@@ -43,6 +88,11 @@ class FingeringConfig {
   /// reach rather than move.
   final int fingerSpan;
   final int fingerStretch;
+
+  /// Pull the whole part towards this fret, for matching a tutorial that plays
+  /// in a particular position. Null leaves the search free.
+  final int? preferredFret;
+  final double positionWeight;
 }
 
 /// Playing [pos] with the fretting hand anchored at [anchor] since [since].
@@ -84,6 +134,10 @@ class FretboardMapper {
     if (pos.fret == 0) cost += config.openStringBonus;
     if (pos.fret > config.comfortFret) {
       cost += config.highFretPenalty * (pos.fret - config.comfortFret);
+    }
+    final preferred = config.preferredFret;
+    if (preferred != null) {
+      cost += config.positionWeight * (pos.fret - preferred).abs();
     }
     return cost;
   }

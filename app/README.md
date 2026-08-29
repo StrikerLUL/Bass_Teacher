@@ -155,6 +155,33 @@ aligns what you see with what you hear; capture has its own delay on the way in.
 The listener reports its own buffer delay and the scorer subtracts it, with a
 manual nudge in settings for whatever the driver adds.
 
+## Why the app and a tutorial disagree
+
+They usually both right. A pitch does not have one home on a bass: E2 sits at
+string 2 fret 2, string 1 fret 7 or string 0 fret 12. Which one you use is a
+preference.
+
+The default optimises for least hand movement and takes open strings when they
+are free, which spreads a part across strings. Most teachers keep a riff on one
+string instead — even tone, one shape to memorise. On the Seven Nation Army riff
+the two differ completely:
+
+| | E2 | E2 | G2 | E2 | D2 | C2 | B1 |
+|---|---|---|---|---|---|---|---|
+| least movement | D2 | D2 | G0 | D2 | D0 | A3 | A2 |
+| one string | A7 | A7 | A10 | A7 | A5 | A3 | A2 |
+
+The second row is what tutorials teach, and the hand icon in the player switches
+between them, optionally pinned near a chosen fret. The choice is remembered per
+track. A test asserts the one-string style reproduces that exact tab.
+
+## Reference files
+
+The same dialog keeps a tab with the track — PDF, image, Guitar Pro, MIDI. Files
+are copied into `data/<track>/reference/` so a track stays self-contained, and
+open in the system viewer rather than in-app: rendering a PDF would mean another
+native plugin, and the tab is wanted on a second screen anyway.
+
 ## Choices
 
 **media_kit, not just_audio.** Two stems play as independent voices so either
