@@ -82,6 +82,26 @@ It renders the widget in isolation rather than capturing the screen, so it
 cannot pick up anything else on the desktop and produces the same image on any
 machine.
 
+## Audio / picture calibration
+
+Bluetooth headsets run 100-250 ms behind, which makes the highlight look wrong
+when the transcription is fine. The ⚙ button opens a slider (-300..+300 ms), and
+**Calibrate with a click** plays a synthesised metronome and flashes on the beat
+so the offset can be set by ear.
+
+The offset lives in `PlaybackClock`, but deliberately does *not* move
+`position`: transport, seeking and the end-of-track check all read the audio
+position, so a +300 ms setting cannot end a song early or send a seek to the
+wrong timestamp. Only `displayPosition` is shifted, and only the fretboard reads
+it. Tests cover both rules.
+
+The click is synthesised rather than shipped as an asset so its beat times are
+exactly known — verified against the rendered WAV at 500.0000 ms spacing with
+accents on beats 1 and 5.
+
+Settings persist to `%APPDATA%ass_trainer\settings.json` (or
+`$XDG_CONFIG_HOME`), written directly rather than through a plugin.
+
 ## Choices
 
 **media_kit, not just_audio.** Two stems play as independent voices so either

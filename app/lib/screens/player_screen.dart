@@ -4,9 +4,11 @@ import 'package:flutter/scheduler.dart';
 import '../models/instrument.dart';
 import '../models/note_event.dart';
 import '../models/transcription.dart';
+import '../services/app_settings.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
+import '../widgets/calibration_dialog.dart';
 import '../widgets/fretboard_view.dart';
 import '../widgets/transport_controls.dart';
 
@@ -36,11 +38,12 @@ class _PlayerScreenState extends State<PlayerScreen>
   void initState() {
     super.initState();
     _clock.duration = widget.transcription.duration;
+    _clock.visualOffset = AppSettings.instance.visualOffset;
     _viewModel = FretboardViewModel(
       timeline: NoteTimeline(widget.transcription.notes),
       instrument: widget.transcription.instrument,
       clock: _clock,
-    );
+    )..lowStringOnTop = AppSettings.instance.lowStringOnTop;
     _ticker = createTicker(_onFrame)..start();
     _loadAudio();
   }
@@ -94,8 +97,19 @@ class _PlayerScreenState extends State<PlayerScreen>
                 ? 'Low string on top — switch to tab layout'
                 : 'Tab layout (G on top) — switch to low string on top',
             icon: const Icon(Icons.swap_vert),
-            onPressed: () => setState(
-              () => _viewModel.lowStringOnTop = !_viewModel.lowStringOnTop,
+            onPressed: () {
+              setState(
+                () => _viewModel.lowStringOnTop = !_viewModel.lowStringOnTop,
+              );
+              AppSettings.instance.setLowStringOnTop(_viewModel.lowStringOnTop);
+            },
+          ),
+          IconButton(
+            tooltip: 'Settings — audio / picture offset',
+            icon: const Icon(Icons.tune),
+            onPressed: () => showDialog<bool>(
+              context: context,
+              builder: (context) => SettingsDialog(clock: _clock),
             ),
           ),
         ],

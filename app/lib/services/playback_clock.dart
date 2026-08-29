@@ -19,6 +19,12 @@ class PlaybackClock extends ChangeNotifier {
   static const double _hardResyncSec = 0.25;
   static const double _nudgeFactor = 0.12;
 
+  /// Largest audio/visual correction offered, in seconds.
+  ///
+  /// Bluetooth headsets typically sit between 100 and 250 ms behind; 300 ms
+  /// covers the worst of them with room to spare.
+  static const double maxVisualOffset = 0.300;
+
   final Stopwatch _wall = Stopwatch()..start();
 
   double _anchorPosition = 0.0;
@@ -27,8 +33,22 @@ class PlaybackClock extends ChangeNotifier {
   bool _playing = false;
   double _rate = 1.0;
   double _duration = 0.0;
+  double _visualOffset = 0.0;
 
+  /// Where the *audio* is. Transport, seeking and end-of-track all use this,
+  /// so calibration cannot make the player stop early or seek to the wrong
+  /// place.
   double get position => _position;
+
+  /// Where the *fretboard* should be drawn: [position] shifted by
+  /// [visualOffset].
+  ///
+  /// The offset lives here rather than in the painter so there is one place
+  /// that defines it, but it deliberately does not move [position] itself —
+  /// shifting the transport would make a +300 ms setting end the song 300 ms
+  /// early and send seeks to the wrong timestamp.
+  double get displayPosition => _position + _visualOffset;
+
   bool get isPlaying => _playing;
   double get rate => _rate;
   double get duration => _duration;
@@ -42,6 +62,17 @@ class PlaybackClock extends ChangeNotifier {
   void _reanchor() {
     _anchorPosition = _predicted;
     _anchorWall = _wallSeconds;
+  }
+
+  /// Positive draws the fretboard ahead of the audio, negative behind it.
+  double get visualOffset => _visualOffset;
+  set visualOffset(double value) {
+    final clamped = value.clamp(-maxVisualOffset, maxVisualOffset);
+    if (clamped == _visualOffset) return;
+    _visualOffset = clamped;
+    // Notify even while paused: the fretboard has to redraw at the new offset
+    // for calibration to be visible.
+    notifyListeners();
   }
 
   set duration(double value) {

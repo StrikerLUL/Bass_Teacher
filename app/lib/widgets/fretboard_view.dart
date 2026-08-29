@@ -103,7 +103,8 @@ class FretboardViewModel extends ChangeNotifier {
 
   /// Called once per vsync.
   void advance(double dt) {
-    _time = clock.position;
+    // Drawn against the calibrated time, not the raw audio position.
+    _time = clock.displayPosition;
     _active = timeline.activeAt(_time);
     _upcoming = timeline.between(_time, _time + lookaheadSec, limit: 8);
 

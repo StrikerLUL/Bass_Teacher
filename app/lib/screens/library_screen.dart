@@ -7,7 +7,10 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import '../models/transcription.dart';
 import '../services/library.dart';
+import '../services/playback_clock.dart';
+import '../services/app_settings.dart';
 import '../services/transcription_job.dart';
+import '../widgets/calibration_dialog.dart';
 import '../widgets/process_dialogs.dart';
 import '../widgets/transport_controls.dart' show formatTime;
 import 'player_screen.dart';
@@ -176,6 +179,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
             tooltip: 'Play the built-in demo riff',
             icon: const Icon(Icons.piano),
             onPressed: _busy ? null : _openDemo,
+          ),
+          IconButton(
+            tooltip: 'Settings — audio / picture offset',
+            icon: const Icon(Icons.tune),
+            onPressed: _busy
+                ? null
+                : () async {
+                    // A throwaway clock: the dialog only needs somewhere to
+                    // preview the offset, and it saves to AppSettings.
+                    final clock = PlaybackClock()
+                      ..visualOffset = AppSettings.instance.visualOffset;
+                    await showDialog<bool>(
+                      context: context,
+                      builder: (context) => SettingsDialog(clock: clock),
+                    );
+                    clock.dispose();
+                  },
           ),
           IconButton(
             tooltip: 'Rescan the data folder',
