@@ -19,6 +19,8 @@ class AppSettings extends ChangeNotifier {
 
   double _visualOffset = 0.0;
   bool _lowStringOnTop = false;
+  bool _snapSeekToBars = true;
+  final Map<String, ({double bpm, double firstBeat})> _tempoOverrides = {};
   bool _loaded = false;
 
   bool get isLoaded => _loaded;
@@ -27,6 +29,15 @@ class AppSettings extends ChangeNotifier {
   double get visualOffset => _visualOffset;
 
   bool get lowStringOnTop => _lowStringOnTop;
+
+  /// Seeking lands on a bar line rather than an arbitrary instant.
+  bool get snapSeekToBars => _snapSeekToBars;
+
+  /// A tempo typed in by hand, keyed by transcription path. Kept here rather
+  /// than rewritten into the track's JSON, so a manual tempo never risks the
+  /// transcription itself.
+  ({double bpm, double firstBeat})? tempoOverride(String key) =>
+      _tempoOverrides[key];
 
   /// Set by tests so they never touch the real user config.
   @visibleForTesting
@@ -53,6 +64,22 @@ class AppSettings extends ChangeNotifier {
       if (document is! Map<String, dynamic>) return;
       _visualOffset = (document['visual_offset_sec'] as num?)?.toDouble() ?? 0.0;
       _lowStringOnTop = document['low_string_on_top'] as bool? ?? false;
+      _snapSeekToBars = document['snap_seek_to_bars'] as bool? ?? true;
+      _tempoOverrides.clear();
+      final overrides = document['tempo_overrides'];
+      if (overrides is Map) {
+        overrides.forEach((key, value) {
+          if (value is Map) {
+            final bpm = (value['bpm'] as num?)?.toDouble();
+            if (bpm != null && bpm > 0) {
+              _tempoOverrides['$key'] = (
+                bpm: bpm,
+                firstBeat: (value['first_beat'] as num?)?.toDouble() ?? 0.0,
+              );
+            }
+          }
+        });
+      }
       notifyListeners();
     } catch (_) {
       // A corrupt settings file must never stop the app starting.
@@ -73,6 +100,25 @@ class AppSettings extends ChangeNotifier {
     await save();
   }
 
+  Future<void> setSnapSeekToBars(bool value) async {
+    if (value == _snapSeekToBars) return;
+    _snapSeekToBars = value;
+    notifyListeners();
+    await save();
+  }
+
+  Future<void> setTempoOverride(String key, double bpm, double firstBeat) async {
+    _tempoOverrides[key] = (bpm: bpm, firstBeat: firstBeat);
+    notifyListeners();
+    await save();
+  }
+
+  Future<void> clearTempoOverride(String key) async {
+    if (_tempoOverrides.remove(key) == null) return;
+    notifyListeners();
+    await save();
+  }
+
   Future<void> save() async {
     final file = settingsFile();
     if (file == null) return;
@@ -81,6 +127,14 @@ class AppSettings extends ChangeNotifier {
       await file.writeAsString(const JsonEncoder.withIndent('  ').convert({
         'visual_offset_sec': double.parse(_visualOffset.toStringAsFixed(4)),
         'low_string_on_top': _lowStringOnTop,
+        'snap_seek_to_bars': _snapSeekToBars,
+        'tempo_overrides': {
+          for (final entry in _tempoOverrides.entries)
+            entry.key: {
+              'bpm': entry.value.bpm,
+              'first_beat': entry.value.firstBeat,
+            }
+        },
       }));
     } catch (_) {
       // Read-only home directory, roaming profile issues: not worth crashing.
@@ -92,6 +146,8 @@ class AppSettings extends ChangeNotifier {
   void resetForTest({double visualOffset = 0.0, bool lowStringOnTop = false}) {
     _visualOffset = visualOffset;
     _lowStringOnTop = lowStringOnTop;
+    _snapSeekToBars = true;
+    _tempoOverrides.clear();
     _loaded = false;
   }
 }

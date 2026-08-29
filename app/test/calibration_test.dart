@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:bass_trainer/models/tempo_grid.dart';
 import 'package:bass_trainer/services/app_settings.dart';
 import 'package:bass_trainer/services/click_track.dart';
 import 'package:bass_trainer/services/playback_clock.dart';
@@ -7,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   settingsTests();
+  tempoTests();
   group('visual offset', () {
     test('shifts the drawn position but not the audio position', () {
       final clock = PlaybackClock()..duration = 100;
@@ -187,6 +189,94 @@ void settingsTests() {
       await AppSettings.instance.load();
       expect(AppSettings.instance.visualOffset, 0.0);
       expect(AppSettings.instance.isLoaded, isTrue);
+    });
+  });
+}
+
+void tempoTests() {
+  group('TempoGrid', () {
+    TempoGrid grid({double bpm = 120, double duration = 8, double first = 0}) =>
+        TempoGrid.uniform(bpm: bpm, duration: duration, firstBeat: first);
+
+    test('uniform spacing matches the tempo', () {
+      final g = grid(bpm: 120, duration: 4);
+      expect(g.beats.take(5), [0.0, 0.5, 1.0, 1.5, 2.0]);
+      expect(g.beats.length, 9);
+      expect(g.manual, isTrue);
+    });
+
+    test('bars and beats count from one', () {
+      final g = grid();
+      expect(g.barAndBeatAt(0.0), (bar: 1, beat: 1));
+      expect(g.barAndBeatAt(0.5), (bar: 1, beat: 2));
+      expect(g.barAndBeatAt(2.0), (bar: 2, beat: 1));
+      expect(g.barAndBeatAt(4.0), (bar: 3, beat: 1));
+    });
+
+    test('before the first beat there is no bar', () {
+      final g = TempoGrid(bpm: 120, beats: const [1.0, 1.5, 2.0]);
+      expect(g.barAndBeatAt(0.4), (bar: 0, beat: 0));
+    });
+
+    test('snapping takes the nearest bar line', () {
+      final g = grid(); // bars at 0, 2, 4, 6, 8
+      expect(g.snapToBar(2.1), 2.0);
+      expect(g.snapToBar(3.4), 4.0);
+      expect(g.snapToBar(2.9), 2.0);
+      expect(g.snapToBar(99), 8.0);
+    });
+
+    test('snapping is a no-op without a grid', () {
+      final empty = TempoGrid(bpm: 0, beats: const []);
+      expect(empty.isEmpty, isTrue);
+      expect(empty.snapToBar(12.3), 12.3);
+      expect(empty.barAndBeatAt(12.3), (bar: 0, beat: 0));
+    });
+
+    test('a downbeat given mid-song still covers the track', () {
+      final g = grid(bpm: 120, duration: 4, first: 2.25);
+      expect(g.beats.first, closeTo(0.25, 1e-9));
+    });
+
+    test('metre other than four works', () {
+      final g = TempoGrid.uniform(
+          bpm: 120, duration: 8, firstBeat: 0, beatsPerBar: 3);
+      expect(g.barStarts.take(4), [0.0, 1.5, 3.0, 4.5]);
+    });
+
+    test('parses the backend document, locating the downbeat', () {
+      final g = TempoGrid.fromJson(
+        {
+          'bpm': 172.3,
+          'beats_per_bar': 4,
+          'first_downbeat_sec': 1.05,
+          'confidence': 0.54,
+          'manual': false,
+        },
+        [0.0, 0.35, 0.7, 1.05, 1.4, 1.75, 2.1, 2.45],
+      );
+      expect(g, isNotNull);
+      expect(g!.bpm, closeTo(172.3, 1e-9));
+      expect(g.downbeatIndex, 3, reason: 'downbeat is the fourth beat');
+      expect(g.firstDownbeat, closeTo(1.05, 1e-9));
+      expect(g.barAndBeatAt(1.05), (bar: 1, beat: 1));
+      expect(g.quality, 'usable');
+    });
+
+    test('a missing or zero tempo yields no grid', () {
+      expect(TempoGrid.fromJson(null, null), isNull);
+      expect(TempoGrid.fromJson({'bpm': 0}, const []), isNull);
+    });
+
+    test('confidence wording flags a weak estimate', () {
+      expect(TempoGrid(bpm: 120, beats: const [0], confidence: 0.9).quality,
+          'strong');
+      expect(
+          TempoGrid(bpm: 120, beats: const [0], confidence: 0.3).quality,
+          contains('check it'));
+      expect(
+          TempoGrid(bpm: 120, beats: const [0], confidence: 0.1).quality,
+          contains('by hand'));
     });
   });
 }

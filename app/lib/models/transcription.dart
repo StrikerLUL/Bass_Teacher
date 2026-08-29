@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../services/fretboard_mapper.dart';
 import 'instrument.dart';
 import 'note_event.dart';
+import 'tempo_grid.dart';
 
 /// A parsed `transcription.json` produced by `backend/processor.py`.
 class Transcription {
@@ -17,6 +18,8 @@ class Transcription {
     this.bassStemPath,
     this.backingStemPath,
     this.stats = const {},
+    this.tempo,
+    this.sourcePath,
   });
 
   final String title;
@@ -33,14 +36,30 @@ class Transcription {
 
   final Map<String, dynamic> stats;
 
+  /// Beat grid, when the backend found one.
+  final TempoGrid? tempo;
+
+  /// Where this was loaded from, used to key per-track settings.
+  final String? sourcePath;
+
   bool get hasAudio => bassStemPath != null || backingStemPath != null;
 
   static Future<Transcription> load(File file) async {
     final text = await file.readAsString();
-    return parse(text, baseDir: file.parent.path, title: p.basename(file.path));
+    return parse(
+      text,
+      baseDir: file.parent.path,
+      title: p.basename(file.path),
+      sourcePath: file.path,
+    );
   }
 
-  static Transcription parse(String jsonText, {String? baseDir, String? title}) {
+  static Transcription parse(
+    String jsonText, {
+    String? baseDir,
+    String? title,
+    String? sourcePath,
+  }) {
     final root = json.decode(jsonText);
     if (root is! Map<String, dynamic>) {
       throw const FormatException('expected a JSON object at the top level');
@@ -99,6 +118,13 @@ class Transcription {
       stats: root['stats'] is Map<String, dynamic>
           ? root['stats'] as Map<String, dynamic>
           : const {},
+      sourcePath: sourcePath,
+      tempo: TempoGrid.fromJson(
+        root['tempo'] is Map<String, dynamic>
+            ? root['tempo'] as Map<String, dynamic>
+            : null,
+        root['beats'] as List?,
+      ),
     );
   }
 

@@ -3,13 +3,16 @@ import 'package:flutter/scheduler.dart';
 
 import '../models/instrument.dart';
 import '../models/note_event.dart';
+import '../models/tempo_grid.dart';
 import '../models/transcription.dart';
 import '../services/app_settings.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
+import '../widgets/beat_ruler.dart';
 import '../widgets/calibration_dialog.dart';
 import '../widgets/fretboard_view.dart';
+import '../widgets/tempo_dialog.dart';
 import '../widgets/transport_controls.dart';
 
 /// Plays one already-loaded transcription.
@@ -33,6 +36,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   Ticker? _ticker;
   Duration _lastFrame = Duration.zero;
   bool _loadingAudio = true;
+  TempoGrid? _grid;
+
+  /// Identifies this track in the settings file, for a manual tempo.
+  String get _trackKey => widget.transcription.sourcePath ?? widget.transcription.title;
 
   @override
   void initState() {
@@ -44,6 +51,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       instrument: widget.transcription.instrument,
       clock: _clock,
     )..lowStringOnTop = AppSettings.instance.lowStringOnTop;
+    _grid = _resolveGrid();
     _ticker = createTicker(_onFrame)..start();
     _loadAudio();
   }
@@ -55,6 +63,44 @@ class _PlayerScreenState extends State<PlayerScreen>
     _player.dispose();
     _clock.dispose();
     super.dispose();
+  }
+
+  /// A hand-set tempo wins over the detected grid.
+  TempoGrid? _resolveGrid() {
+    final override = AppSettings.instance.tempoOverride(_trackKey);
+    if (override != null) {
+      return TempoGrid.uniform(
+        bpm: override.bpm,
+        duration: widget.transcription.duration,
+        firstBeat: override.firstBeat,
+        beatsPerBar: widget.transcription.tempo?.beatsPerBar ?? 4,
+      );
+    }
+    return widget.transcription.tempo;
+  }
+
+  Future<void> _editTempo() async {
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (context) => TempoDialog(
+        detected: widget.transcription.tempo,
+        active: _grid,
+        trackKey: _trackKey,
+        duration: widget.transcription.duration,
+      ),
+    );
+    if (changed == true && mounted) setState(() => _grid = _resolveGrid());
+  }
+
+  /// Land on a bar line rather than an arbitrary instant.
+  void _seek(double seconds) {
+    final grid = _grid;
+    final target = (grid != null &&
+            !grid.isEmpty &&
+            AppSettings.instance.snapSeekToBars)
+        ? grid.snapToBar(seconds)
+        : seconds;
+    _player.seek(target);
   }
 
   Future<void> _loadAudio() async {
@@ -105,6 +151,11 @@ class _PlayerScreenState extends State<PlayerScreen>
             },
           ),
           IconButton(
+            tooltip: 'Tempo and bar lines',
+            icon: const Icon(Icons.straighten),
+            onPressed: _editTempo,
+          ),
+          IconButton(
             tooltip: 'Settings — audio / picture offset',
             icon: const Icon(Icons.tune),
             onPressed: () => showDialog<bool>(
@@ -119,11 +170,13 @@ class _PlayerScreenState extends State<PlayerScreen>
           if (!_loadingAudio && !widget.transcription.hasAudio)
             const _SilentModeBanner(),
           Expanded(child: FretboardView(viewModel: _viewModel)),
-          _NoteReadout(viewModel: _viewModel),
+          if (_grid != null && !_grid!.isEmpty)
+            BeatRuler(grid: _grid!, clock: _clock),
+          _NoteReadout(viewModel: _viewModel, grid: _grid, clock: _clock),
           TransportControls(
             clock: _clock,
             player: _player,
-            onSeek: (value) => _player.seek(value),
+            onSeek: _seek,
             onTogglePlay: () => _player.togglePlay(),
             onRateChanged: (rate) => _player.setRate(rate),
             onMixChanged: () => setState(() {}),
@@ -155,9 +208,15 @@ class _SilentModeBanner extends StatelessWidget {
 
 /// What is sounding now and what is next: which string, which fret.
 class _NoteReadout extends StatelessWidget {
-  const _NoteReadout({required this.viewModel});
+  const _NoteReadout({
+    required this.viewModel,
+    required this.grid,
+    required this.clock,
+  });
 
   final FretboardViewModel viewModel;
+  final TempoGrid? grid;
+  final PlaybackClock clock;
 
   String _stringName(int index) =>
       midiToName(viewModel.instrument.tuningMidi[index])
@@ -186,6 +245,10 @@ class _NoteReadout extends StatelessWidget {
                       _NoteChip(viewModel: viewModel, note: next, label: 'NEXT'),
                 ),
               const Spacer(),
+              if (grid != null && !grid!.isEmpty) ...[
+                _BarBeat(grid: grid!, clock: clock),
+                const SizedBox(width: 18),
+              ],
               if (current != null && current.string != null)
                 Text(
                   '${_stringName(current.string!)} string'
@@ -195,6 +258,44 @@ class _NoteReadout extends StatelessWidget {
                 ),
             ],
           ),
+        );
+      },
+    );
+  }
+}
+
+/// Where we are in the music, in bars and beats rather than seconds.
+class _BarBeat extends StatelessWidget {
+  const _BarBeat({required this.grid, required this.clock});
+
+  final TempoGrid grid;
+  final PlaybackClock clock;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AnimatedBuilder(
+      animation: clock,
+      builder: (context, _) {
+        final at = grid.barAndBeatAt(clock.displayPosition);
+        final label = at.bar == 0 ? '—' : 'bar ${at.bar}  ·  beat ${at.beat}';
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${grid.bpm.round()} bpm',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ],
         );
       },
     );

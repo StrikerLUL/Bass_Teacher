@@ -77,6 +77,10 @@ to the JSON so a track folder can be moved.
                   "tuning_midi": [28,33,38,43], "frets": 24,
                   "string_order": "0 = lowest pitched" },
   "stats":      { "notes": 812, "peak_notes_per_sec": 11, "max_fret_jump": 4 },
+  "tempo":      { "bpm": 172.3, "beats_per_bar": 4, "first_downbeat_sec": 1.05,
+                  "confidence": 0.54, "manual": false,
+                  "detail": { "regularity": 0.7, "precision": 0.35, "recall": 0.68 } },
+  "beats":      [0.12, 0.47, 0.82, "..."],
   "notes": [
     { "start": 0.512, "end": 0.698, "midi": 40, "name": "E2",
       "velocity": 0.82, "string": 1, "fret": 7, "hand": 7, "finger": 1 }
@@ -97,6 +101,28 @@ outside the instrument's range — render it as a rest rather than failing.
 
 If a file carries only pitches, the app computes positions itself on load using
 the same algorithm ported to Dart, so hand-written and third-party JSON work.
+
+## Tempo and bars
+
+`tempo.py` tracks the beat in the *reconstructed mix* — bass plus backing is
+the original, and the drums are what carry the beat. It reports a confidence
+built from an F-measure between the beats and the onsets actually heard:
+precision punishes a grid running too fast into the gaps, recall punishes one
+running too slow.
+
+Both halves are needed. Scoring only "how loud is the audio at the beats"
+rewards *sparse* grids — measured on a 172 bpm track, a half-time grid scored
+3.09 against the truth's 2.56 and won. Recall is what exposes it: the half-time
+grid matched 46% of onsets against 68%.
+
+Detection also tries several starting tempos and keeps the most confident grid.
+Starting at 120 on that same track returned 112.3 bpm — hearing three eighth
+notes as one beat — while starting nearer found 172.3 with higher confidence.
+The score already ranked the right answer above the wrong one; only the search
+start was at fault.
+
+Override it with `--bpm`, or in the app's tempo dialog, which stores a manual
+tempo per track in the settings file rather than rewriting the transcription.
 
 ## Status
 

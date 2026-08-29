@@ -46,6 +46,7 @@ try:  # works both as `python processor.py` and `python -m backend.processor`
         fingering_stats,
         midi_to_name,
     )
+    from . import tempo as tempo_mod
 except ImportError:  # pragma: no cover - script execution
     from fretboard import (
         FingeringConfig,
@@ -57,6 +58,7 @@ except ImportError:  # pragma: no cover - script execution
         fingering_stats,
         midi_to_name,
     )
+    import tempo as tempo_mod
 
 VERSION = "0.1.0"
 SCHEMA_VERSION = 1
@@ -65,6 +67,21 @@ DEMUCS_BASS_STEM = "bass.wav"
 DEMUCS_OTHER_STEM = "no_bass.wav"
 
 _START = time.monotonic()
+
+
+def use_utf8_output() -> None:
+    """Make stdout able to carry non-Latin track names.
+
+    Windows consoles default to cp1252, so printing a Japanese title raises
+    UnicodeEncodeError and takes the whole run down with it — and anime and
+    J-Pop filenames are the common case here, not an edge case. Anything the
+    terminal still cannot draw is replaced rather than fatal.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
 
 
 def log(message: str) -> None:
@@ -623,6 +640,58 @@ def fit_to_instrument(events: List[NoteEvent], instrument: Instrument) -> List[N
 
 
 # --------------------------------------------------------------------------- #
+# Stage 4b — Tempo
+# --------------------------------------------------------------------------- #
+
+def detect_tempo(
+    bass_path: Path,
+    backing_path: Optional[Path],
+    *,
+    beats_per_bar: int,
+    start_bpm: Optional[float],
+) -> Optional["tempo_mod.TempoGrid"]:
+    """Find the beat in the *mix*, not the bass alone.
+
+    Demucs splits into bass + everything-else, so adding the stems back together
+    reconstructs the original. The drums are in there, and they are what carries
+    the beat — tracking tempo from an isolated bass line is far harder.
+    """
+    if find_spec("librosa") is None or find_spec("numpy") is None:
+        log("tempo: librosa not available, skipping")
+        return None
+
+    import librosa
+    import numpy as np
+
+    try:
+        audio, rate = librosa.load(str(bass_path), sr=22050, mono=True)
+        if backing_path is not None and backing_path.exists():
+            backing, _ = librosa.load(str(backing_path), sr=22050, mono=True)
+            width = min(len(audio), len(backing))
+            audio = audio[:width] + backing[:width]
+            source = "bass + backing (reconstructed mix)"
+        else:
+            source = "bass stem only"
+        peak = float(np.abs(audio).max()) or 1.0
+        audio = audio / peak
+    except Exception as exc:
+        log(f"tempo: could not load audio ({exc})")
+        return None
+
+    grid = tempo_mod.detect(
+        audio, rate, beats_per_bar=beats_per_bar, start_bpm=start_bpm
+    )
+    if grid is None:
+        log("tempo: no beat found")
+        return None
+
+    log(f"tempo: {grid.bpm:.1f} bpm, {len(grid.beats)} beats from {source}, "
+        f"confidence {grid.confidence:.2f} "
+        f"({tempo_mod.describe_confidence(grid.confidence)})")
+    return grid
+
+
+# --------------------------------------------------------------------------- #
 # Stage 5 — Document
 # --------------------------------------------------------------------------- #
 
@@ -636,6 +705,7 @@ def build_document(
     bass_rel: Optional[str],
     backing_rel: Optional[str],
     settings: Dict[str, Any],
+    grid: Optional[Any] = None,
 ) -> Dict[str, Any]:
     notes = [
         {
@@ -671,6 +741,9 @@ def build_document(
             "string_order": "0 = lowest pitched",
         },
         "transcription": settings,
+        # Beat grid: musicians count in bars, and the app snaps seeking to them.
+        "tempo": grid.to_dict() if grid is not None else None,
+        "beats": [round(b, 4) for b in grid.beats] if grid is not None else [],
         "stats": fingering_stats(events),
         "notes": notes,
     }
@@ -740,6 +813,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     group.add_argument("--octave-window", type=float, default=2.0,
                        help="seconds of context used to judge a stray note")
 
+    group = parser.add_argument_group("tempo")
+    group.add_argument("--bpm", type=float,
+                       help="skip detection and use this tempo")
+    group.add_argument("--first-beat", type=float, default=0.0,
+                       help="seconds to the first downbeat, with --bpm")
+    group.add_argument("--beats-per-bar", type=int, default=4)
+    group.add_argument("--start-bpm", type=float,
+                       help="force a single starting tempo for the search; by "
+                            "default several are tried and the most confident "
+                            "grid wins")
+    group.add_argument("--no-tempo", action="store_true",
+                       help="skip beat detection entirely")
+
     group = parser.add_argument_group("instrument")
     group.add_argument("--tuning", default=DEFAULT_TUNING,
                        help="open strings, low to high")
@@ -751,6 +837,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    use_utf8_output()
     args = parse_args(argv)
 
     if args.input is None and args.bass_stem is None:
@@ -842,8 +929,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     annotate_hand_positions(events)
     assign_fingers(events)
 
-    # ---- stage 5: document --------------------------------------------------
+    # ---- stage 4b: tempo ----------------------------------------------------
     duration, sample_rate = audio_info(bass_path)
+    grid = None
+    if args.bpm:
+        grid = tempo_mod.uniform_grid(
+            args.bpm, duration or 0.0, args.first_beat, args.beats_per_bar
+        )
+        log(f"tempo: {args.bpm:g} bpm set by hand, first beat {args.first_beat:g}s")
+    elif not args.no_tempo:
+        grid = detect_tempo(
+            bass_path, backing_path,
+            beats_per_bar=args.beats_per_bar, start_bpm=args.start_bpm,
+        )
+
+    # ---- stage 5: document --------------------------------------------------
 
     # Transcribing from a stem means `source` is "bass.wav", which is not the
     # song's name. Keep whatever a previous run in this folder recorded, and
@@ -871,6 +971,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sample_rate=sample_rate,
         bass_rel=_relative(bass_path, out_dir),
         backing_rel=_relative(backing_path, out_dir) if backing_path else None,
+        grid=grid,
         settings={
             "model": args.engine,
             "onset_threshold": args.onset_threshold,
