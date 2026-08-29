@@ -129,9 +129,9 @@ tempo per track in the settings file rather than rewriting the transcription.
 Done: pipeline with two selectable transcription engines, fingering search and
 finger numbering (tested both sides), library screen, fretboard renderer,
 transport, mute/solo/gain, speed control, audio-visual calibration, tempo and
-bar grid, A-B practice loop with a speed ramp.
+bar grid, A-B practice loop with a speed ramp, microphone scoring.
 
-Not done yet: no microphone input; no tab export; two-engine stem sync is
+Not done yet: no tab export; two-engine stem sync is
 corrected on a 500 ms timer rather than sample-locked.
 
 Never verified by ear: every check so far has been a measurement or an offline

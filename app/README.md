@@ -129,6 +129,32 @@ elsewhere still wins rather than wedging the clock. `StemPlayer` also pauses
 drift correction for 400 ms after a seek, since mid-seek one engine has moved
 and the other has not.
 
+## Listening and scoring
+
+The 🎤 button captures the default input, runs YIN pitch detection on it and
+colours each note green when you hit it and red when you miss. At the end of a
+loop pass it reports the section score. Off by default; nothing is captured
+until it is switched on.
+
+**Pitch detection is YIN, not autocorrelation.** Autocorrelation reports an
+octave too low on a bass, where the second harmonic often outweighs the
+fundamental; YIN's cumulative mean normalisation suppresses that.
+
+The bar for "good enough" came from a reference rather than a guess: over a real
+separated bass stem, `librosa.pyin` agrees with the transcription 88% of the
+time, and this detector reaches the same figure, disagreeing on the same handful
+of very low notes. `test/pitch_on_real_bass_test.dart` asserts it, and skips
+when there is no processed track to hand.
+
+Known limit: a tone *above* the search range aliases down to a submultiple
+rather than being rejected — any multiple of a true period is also a true
+period. Fine for a bass DI or a mic on a cab; do not point it at a whole mix.
+
+**Input latency is handled separately from output latency.** The A/V offset
+aligns what you see with what you hear; capture has its own delay on the way in.
+The listener reports its own buffer delay and the scorer subtracts it, with a
+manual nudge in settings for whatever the driver adds.
+
 ## Choices
 
 **media_kit, not just_audio.** Two stems play as independent voices so either

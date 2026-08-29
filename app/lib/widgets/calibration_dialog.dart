@@ -217,6 +217,7 @@ class SettingsDialog extends StatefulWidget {
 
 class _SettingsDialogState extends State<SettingsDialog> {
   late double _offset = widget.clock.visualOffset;
+  late double _inputOffset = AppSettings.instance.inputOffset;
   double _restore = 0;
 
   @override
@@ -283,6 +284,32 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ],
             ),
             Center(child: Text(describeOffset(_offset))),
+            const SizedBox(height: 16),
+            Text('Microphone offset', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 4),
+            Text(
+              'Only used when scoring what you play. The capture buffer is '
+              'already accounted for; nudge this if your playing still reads '
+              'as consistently early or late.',
+              style: theme.textTheme.bodySmall,
+            ),
+            Row(
+              children: [
+                const Text('−300'),
+                Expanded(
+                  child: Slider(
+                    value: _inputOffset.clamp(-0.3, 0.3),
+                    min: -0.3,
+                    max: 0.3,
+                    divisions: 120,
+                    label: formatOffset(_inputOffset),
+                    onChanged: (v) => setState(() => _inputOffset = v),
+                  ),
+                ),
+                const Text('+300'),
+              ],
+            ),
+            Center(child: Text(formatOffset(_inputOffset))),
             const SizedBox(height: 12),
             Center(
               child: OutlinedButton.icon(
@@ -305,6 +332,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
         FilledButton(
           onPressed: () async {
             await AppSettings.instance.setVisualOffset(_offset);
+            await AppSettings.instance.setInputOffset(_inputOffset);
             if (context.mounted) Navigator.pop(context, true);
           },
           child: const Text('Save'),

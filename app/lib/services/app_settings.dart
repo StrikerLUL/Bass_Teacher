@@ -20,6 +20,7 @@ class AppSettings extends ChangeNotifier {
   double _visualOffset = 0.0;
   bool _lowStringOnTop = false;
   bool _snapSeekToBars = true;
+  double _inputOffset = 0.0;
   final Map<String, ({double bpm, double firstBeat})> _tempoOverrides = {};
   bool _loaded = false;
 
@@ -32,6 +33,11 @@ class AppSettings extends ChangeNotifier {
 
   /// Seeking lands on a bar line rather than an arbitrary instant.
   bool get snapSeekToBars => _snapSeekToBars;
+
+  /// Extra seconds to subtract when judging what the microphone heard, on top
+  /// of the capture buffer the listener already accounts for. Positive means
+  /// the input arrives later than that estimate.
+  double get inputOffset => _inputOffset;
 
   /// A tempo typed in by hand, keyed by transcription path. Kept here rather
   /// than rewritten into the track's JSON, so a manual tempo never risks the
@@ -65,6 +71,7 @@ class AppSettings extends ChangeNotifier {
       _visualOffset = (document['visual_offset_sec'] as num?)?.toDouble() ?? 0.0;
       _lowStringOnTop = document['low_string_on_top'] as bool? ?? false;
       _snapSeekToBars = document['snap_seek_to_bars'] as bool? ?? true;
+      _inputOffset = (document['input_offset_sec'] as num?)?.toDouble() ?? 0.0;
       _tempoOverrides.clear();
       final overrides = document['tempo_overrides'];
       if (overrides is Map) {
@@ -100,6 +107,14 @@ class AppSettings extends ChangeNotifier {
     await save();
   }
 
+  Future<void> setInputOffset(double seconds) async {
+    final clamped = seconds.clamp(-0.3, 0.3);
+    if (clamped == _inputOffset) return;
+    _inputOffset = clamped;
+    notifyListeners();
+    await save();
+  }
+
   Future<void> setSnapSeekToBars(bool value) async {
     if (value == _snapSeekToBars) return;
     _snapSeekToBars = value;
@@ -128,6 +143,7 @@ class AppSettings extends ChangeNotifier {
         'visual_offset_sec': double.parse(_visualOffset.toStringAsFixed(4)),
         'low_string_on_top': _lowStringOnTop,
         'snap_seek_to_bars': _snapSeekToBars,
+        'input_offset_sec': double.parse(_inputOffset.toStringAsFixed(4)),
         'tempo_overrides': {
           for (final entry in _tempoOverrides.entries)
             entry.key: {
@@ -147,6 +163,7 @@ class AppSettings extends ChangeNotifier {
     _visualOffset = visualOffset;
     _lowStringOnTop = lowStringOnTop;
     _snapSeekToBars = true;
+    _inputOffset = 0.0;
     _tempoOverrides.clear();
     _loaded = false;
   }

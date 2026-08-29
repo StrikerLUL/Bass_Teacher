@@ -6,6 +6,7 @@ import '../models/instrument.dart';
 import '../models/note_event.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
+import '../services/practice_scorer.dart';
 
 /// Frets carrying position markers on a bass neck.
 const Set<int> _inlayFrets = {3, 5, 7, 9, 15, 17, 19, 21};
@@ -16,6 +17,11 @@ const Set<int> _doubleInlayFrets = {12, 24};
 /// Colour answers "which string?" faster than reading a label or counting rows,
 /// but it is never the only channel: every string also carries its name, and
 /// the note is drawn on the string itself.
+/// Verdict colours, deliberately not from the string palette: green and red
+/// have to mean "right" and "wrong", not "which string".
+const Color kHitColour = Color(0xFF3FBF7F);
+const Color kMissColour = Color(0xFFEF4A54);
+
 const List<Color> _stringPalette = [
   Color(0xFFEF4A54), // low  - red
   Color(0xFFF29A2E), //      - amber
@@ -55,6 +61,10 @@ class FretboardViewModel extends ChangeNotifier {
 
   /// How far ahead to show notes the player should be preparing for.
   final double lookaheadSec;
+
+  /// When listening, supplies hit/miss for each note so the marker can be
+  /// coloured by whether it was actually played.
+  PracticeScorer? scorer;
 
   late final int _spanFrets;
 
@@ -438,7 +448,12 @@ class FretboardPainter extends CustomPainter {
 
       final progress = note.progressAt(vm.time);
       final swell = 1.0 + 0.18 * (1 - progress) * (1 - progress);
-      final colour = stringColour(string);
+      final verdict = vm.scorer?.verdictFor(note) ?? NoteVerdict.pending;
+      final colour = switch (verdict) {
+        NoteVerdict.hit => kHitColour,
+        NoteVerdict.missed => kMissColour,
+        NoteVerdict.pending => stringColour(string),
+      };
       final centre = Offset(xForMarker(fret), yForString(string));
 
       canvas.drawCircle(

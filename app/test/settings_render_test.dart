@@ -16,7 +16,7 @@ void main() {
   setUpAll(loadTestFonts);
 
   testWidgets('settings dialog renders', (tester) async {
-    tester.view.physicalSize = const Size(720, 520);
+    tester.view.physicalSize = const Size(760, 700);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -7,13 +9,17 @@ import '../models/tempo_grid.dart';
 import '../models/transcription.dart';
 import '../services/app_settings.dart';
 import '../services/loop_controller.dart';
+import '../services/mic_listener.dart';
+import '../services/pitch_detector.dart';
 import '../services/note_timeline.dart';
+import '../services/practice_scorer.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
 import '../widgets/beat_ruler.dart';
 import '../widgets/calibration_dialog.dart';
 import '../widgets/loop_controls.dart';
 import '../widgets/loop_seek_bar.dart';
+import '../widgets/score_strip.dart';
 import '../widgets/fretboard_view.dart';
 import '../widgets/tempo_dialog.dart';
 import '../widgets/transport_controls.dart';
@@ -41,6 +47,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _loadingAudio = true;
   TempoGrid? _grid;
   final LoopController _loop = LoopController();
+  late final PracticeScorer _scorer;
+  MicListener? _mic;
+  StreamSubscription<PitchReading>? _readings;
+  SectionScore? _lastSectionScore;
 
   /// Identifies this track in the settings file, for a manual tempo.
   String get _trackKey => widget.transcription.sourcePath ?? widget.transcription.title;
@@ -55,6 +65,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       instrument: widget.transcription.instrument,
       clock: _clock,
     )..lowStringOnTop = AppSettings.instance.lowStringOnTop;
+    _scorer = PracticeScorer(timeline: NoteTimeline(widget.transcription.notes));
     _grid = _resolveGrid();
     _ticker = createTicker(_onFrame)..start();
     _loadAudio();
@@ -63,6 +74,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void dispose() {
     _ticker?.dispose();
+    _readings?.cancel();
+    _mic?.dispose();
+    _scorer.dispose();
     _viewModel.dispose();
     _loop.dispose();
     _player.dispose();
@@ -70,9 +84,55 @@ class _PlayerScreenState extends State<PlayerScreen>
     super.dispose();
   }
 
+  /// Start or stop scoring what is played against the transcription.
+  Future<void> _toggleListening() async {
+    if (_mic?.isRunning ?? false) {
+      await _readings?.cancel();
+      _readings = null;
+      await _mic?.stop();
+      _scorer.listening = false;
+      _viewModel.scorer = null;
+      if (mounted) setState(() {});
+      return;
+    }
+
+    final mic = _mic ??= MicListener();
+    _readings = mic.readings.listen(_onPitch);
+    await mic.start();
+    if (!mounted) return;
+    if (mic.error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Microphone unavailable: ${mic.error}')),
+      );
+      await _readings?.cancel();
+      _readings = null;
+    } else {
+      _scorer.listening = true;
+      _viewModel.scorer = _scorer;
+    }
+    setState(() {});
+  }
+
+  void _onPitch(PitchReading reading) {
+    if (!_clock.isPlaying) return;
+    // displayPosition is already calibrated against output latency; the
+    // capture buffer is a separate delay on the way in.
+    final latency = (_mic?.captureLatencySec ?? 0) +
+        AppSettings.instance.inputOffset;
+    _scorer.offer(
+      reading,
+      PracticeScorer.songTimeFor(_clock.displayPosition, latency),
+    );
+  }
+
   /// Jump back to A, carrying the overshoot so passes do not drift, and step
   /// the ramp up.
   void _wrapLoop() {
+    if (_scorer.listening && _loop.isSet) {
+      final score = _scorer.scoreBetween(_loop.start!, _loop.end!);
+      if (!score.isEmpty) _lastSectionScore = score;
+      _scorer.resetBetween(_loop.start!, _loop.end!);
+    }
     final target = _loop.wrapPosition(_clock.position);
     _player.seek(target);
     final rate = _loop.completePass();
@@ -159,6 +219,10 @@ class _PlayerScreenState extends State<PlayerScreen>
       _player.pause();
     }
 
+    if (_scorer.listening && _clock.isPlaying) {
+      _scorer.expireBefore(_clock.displayPosition);
+    }
+
     // Cap dt so a dropped frame or a backgrounded window does not jump the view.
     _viewModel.advance(dt.clamp(0.0, 0.1));
   }
@@ -182,6 +246,14 @@ class _PlayerScreenState extends State<PlayerScreen>
             },
           ),
           IconButton(
+            tooltip: (_mic?.isRunning ?? false)
+                ? 'Stop listening'
+                : 'Listen and score what I play',
+            icon: Icon((_mic?.isRunning ?? false) ? Icons.mic : Icons.mic_none),
+            isSelected: _mic?.isRunning ?? false,
+            onPressed: _toggleListening,
+          ),
+          IconButton(
             tooltip: 'Tempo and bar lines',
             icon: const Icon(Icons.straighten),
             onPressed: _editTempo,
@@ -203,6 +275,12 @@ class _PlayerScreenState extends State<PlayerScreen>
           Expanded(child: FretboardView(viewModel: _viewModel)),
           if (_grid != null && !_grid!.isEmpty)
             BeatRuler(grid: _grid!, clock: _clock),
+          if (_scorer.listening)
+            ScoreStrip(
+              scorer: _scorer,
+              lastPass: _lastSectionScore,
+              onDismiss: () => setState(() => _lastSectionScore = null),
+            ),
           _NoteReadout(viewModel: _viewModel, grid: _grid, clock: _clock),
           LoopSeekBar(clock: _clock, loop: _loop, onSeek: _seek),
           Padding(
