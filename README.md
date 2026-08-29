@@ -11,7 +11,7 @@ song.mp3
    │
    ├─ Demucs ──────────► bass.wav + backing.wav
    │                        │
-   │                        └─ Basic Pitch ──► note events
+   │                        └─ torchcrepe ──► note events
    │                                              │
    │                                     clean-up + fingering
    │                                              │
@@ -92,7 +92,7 @@ shifted, which lands on the index.
 
 `string` 0 is the **lowest pitched** string throughout. `hand` is the fret the
 fretting hand should sit at for the surrounding phrase; the app uses it to draw
-the position box and to scroll the neck. `string`/`fret` may be null for a note
+the position box and to work out `finger`. `string`/`fret` may be null for a note
 outside the instrument's range — render it as a rest rather than failing.
 
 If a file carries only pitches, the app computes positions itself on load using
@@ -100,8 +100,13 @@ the same algorithm ported to Dart, so hand-written and third-party JSON work.
 
 ## Status
 
-Done: pipeline, fingering search (tested both sides), fretboard renderer,
-transport, mute/solo, speed control.
+Done: pipeline with two selectable transcription engines, fingering search and
+finger numbering (tested both sides), library screen, fretboard renderer,
+transport, mute/solo/gain, speed control, audio-visual calibration.
 
-Not done yet: no waveform or note-highway view; two-engine stem sync is
-corrected on a 500 ms timer rather than sample-locked; tab export.
+Not done yet: no A-B practice loop; no bar/beat grid; no microphone input; no
+tab export; two-engine stem sync is corrected on a 500 ms timer rather than
+sample-locked.
+
+Never verified by ear: every check so far has been a measurement or an offline
+render. No one has confirmed the app actually sounds right.
