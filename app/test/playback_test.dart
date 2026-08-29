@@ -175,6 +175,21 @@ void mixerTests() {
           reason: 'no combination of toggles may produce total silence');
     });
 
+    test('gain above unity is preserved, not clamped to 100%', () {
+      final m = StemPlayer.mixLevels(
+        soloBass: false, bassMuted: false, bassVolume: 1.6, backingVolume: 0.45);
+      expect(m.bass, 1.6, reason: 'the bass must be able to sit above the band');
+      expect(m.backing, 0.45);
+      expect(m.bass, greaterThan(m.backing));
+    });
+
+    test('solo keeps whatever bass gain was dialled in', () {
+      final m = StemPlayer.mixLevels(
+        soloBass: true, bassMuted: true, bassVolume: 1.6, backingVolume: 1.0);
+      expect(m.bass, 1.6);
+      expect(m.backing, 0.0);
+    });
+
     test('no toggle combination is ever fully silent', () {
       for (final solo in [true, false]) {
         for (final muted in [true, false]) {

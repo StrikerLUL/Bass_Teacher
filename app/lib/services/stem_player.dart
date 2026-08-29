@@ -20,6 +20,11 @@ class StemPlayer {
   static const int _maxDriftMs = 80;
   static const List<double> speeds = [0.5, 0.65, 0.8, 0.9, 1.0];
 
+  /// Stems can be pushed past unity so the bass can sit above the band.
+  /// mpv refuses volume over 100% until `volume-max` is raised, which is done
+  /// per player in [_unlockGain].
+  static const double maxGain = 2.0;
+
   final PlaybackClock clock;
 
   Player? _bass;
@@ -60,6 +65,7 @@ class StemPlayer {
       if (_bass != null) _bass!.open(Media(bassPath!), play: false),
       if (_backing != null) _backing!.open(Media(backingPath!), play: false),
     ]);
+    await Future.wait<void>([for (final p in _players) _unlockGain(p)]);
     await _applyVolumes();
     await setRate(clock.rate);
 
@@ -136,12 +142,28 @@ class StemPlayer {
   }
 
   Future<void> setBassVolume(double volume) {
-    _bassVolume = volume.clamp(0.0, 1.0);
+    _bassVolume = volume.clamp(0.0, maxGain);
     return _applyVolumes();
   }
 
   Future<void> setBackingVolume(double volume) {
-    _backingVolume = volume.clamp(0.0, 1.0);
+    _backingVolume = volume.clamp(0.0, maxGain);
+    return _applyVolumes();
+  }
+
+  /// Raise the bass over the band and pull the band back, in one action.
+  Future<void> boostBass() {
+    _bassMuted = false;
+    _bassVolume = 1.6;
+    _backingVolume = 0.45;
+    return _applyVolumes();
+  }
+
+  Future<void> resetMix() {
+    _bassMuted = false;
+    _soloBass = false;
+    _bassVolume = 1.0;
+    _backingVolume = 1.0;
     return _applyVolumes();
   }
 
@@ -149,8 +171,13 @@ class StemPlayer {
   String get mixDescription {
     if (!hasAudio) return 'No audio loaded';
     if (_soloBass) return 'Bass only';
-    if (_bassMuted) return hasBacking ? 'Backing only — play the bass yourself' : 'Silent';
-    return hasBacking ? 'Bass + backing' : 'Bass only';
+    if (_bassMuted) {
+      return hasBacking ? 'Backing only — play the bass yourself' : 'Silent';
+    }
+    if (!hasBacking) return 'Bass only';
+    if (_bassVolume > _backingVolume * 1.15) return 'Bass forward';
+    if (_backingVolume > _bassVolume * 1.15) return 'Backing forward';
+    return 'Bass + backing';
   }
 
   /// Solo wins over mute, the way a mixing desk behaves.
@@ -158,6 +185,8 @@ class StemPlayer {
   /// Treating them as two independent switches let both be engaged at once:
   /// mute the bass, then hit Solo bass, and every stem was silenced with no
   /// obvious way back. Soloing the bass now un-mutes it.
+  /// Pure so the interaction between mute, solo and the two gains can be
+  /// tested without an audio engine.
   static ({double bass, double backing}) mixLevels({
     required bool soloBass,
     required bool bassMuted,
@@ -178,9 +207,22 @@ class StemPlayer {
     final bassLevel = levels.bass;
     final backingLevel = levels.backing;
     await Future.wait<void>([
-      if (_bass != null) _bass!.setVolume(bassLevel * 100),
-      if (_backing != null) _backing!.setVolume(backingLevel * 100),
+      if (_bass != null) _bass!.setVolume((bassLevel * 100).clamp(0, maxGain * 100)),
+      if (_backing != null)
+        _backing!.setVolume((backingLevel * 100).clamp(0, maxGain * 100)),
     ]);
+  }
+
+  /// mpv clamps volume at 100% unless `volume-max` says otherwise. Failing to
+  /// raise it is not fatal: the mix still works, it just cannot exceed unity.
+  Future<void> _unlockGain(Player player) async {
+    final platform = player.platform;
+    if (platform is! NativePlayer) return;
+    try {
+      await platform.setProperty('volume-max', '${(maxGain * 100).round()}');
+    } catch (_) {
+      // older mpv, or a backend without the property - ignore
+    }
   }
 
   Future<void> _teardown() async {

@@ -168,13 +168,141 @@ class _StemMix extends StatelessWidget {
               : null,
           visualDensity: VisualDensity.compact,
         ),
-        const SizedBox(width: 10),
-        // Say plainly what is audible: mute and solo interact, and silence
-        // with no explanation reads as a broken player.
+        IconButton(
+          onPressed: player.hasAudio
+              ? () async {
+                  await showDialog<void>(
+                    context: context,
+                    builder: (context) =>
+                        _MixDialog(player: player, onChanged: onChanged),
+                  );
+                  onChanged();
+                }
+              : null,
+          icon: const Icon(Icons.tune),
+          tooltip: 'Levels — make the bass louder than the band',
+        ),
+        const SizedBox(width: 4),
+        // Say plainly what is audible: mute, solo and the two gains interact,
+        // and silence with no explanation reads as a broken player.
         Text(
           player.mixDescription,
           style: theme.textTheme.labelMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Independent gain for each stem, so the bass can sit above the band.
+class _MixDialog extends StatefulWidget {
+  const _MixDialog({required this.player, required this.onChanged});
+
+  final StemPlayer player;
+  final VoidCallback onChanged;
+
+  @override
+  State<_MixDialog> createState() => _MixDialogState();
+}
+
+class _MixDialogState extends State<_MixDialog> {
+  Future<void> _update(Future<void> Function() action) async {
+    await action();
+    if (mounted) setState(() {});
+    widget.onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final player = widget.player;
+    return AlertDialog(
+      title: const Text('Levels'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _GainSlider(
+              label: 'Bass',
+              value: player.bassVolume,
+              enabled: player.hasBass,
+              onChanged: (v) => _update(() => player.setBassVolume(v)),
+            ),
+            _GainSlider(
+              label: 'Backing',
+              value: player.backingVolume,
+              enabled: player.hasBacking,
+              onChanged: (v) => _update(() => player.setBackingVolume(v)),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Above 100% is real gain, not a trick — the separated bass is '
+              'quieter than the full mix, so it usually needs it.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              children: [
+                OutlinedButton(
+                  onPressed: () => _update(player.boostBass),
+                  child: const Text('Bass forward'),
+                ),
+                OutlinedButton(
+                  onPressed: () => _update(player.resetMix),
+                  child: const Text('Reset'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Done'),
+        ),
+      ],
+    );
+  }
+}
+
+class _GainSlider extends StatelessWidget {
+  const _GainSlider({
+    required this.label,
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(width: 66, child: Text(label)),
+        Expanded(
+          child: Slider(
+            value: value.clamp(0.0, StemPlayer.maxGain),
+            max: StemPlayer.maxGain,
+            divisions: 40,
+            label: '${(value * 100).round()}%',
+            onChanged: enabled ? onChanged : null,
+          ),
+        ),
+        SizedBox(
+          width: 46,
+          child: Text(
+            '${(value * 100).round()}%',
+            textAlign: TextAlign.end,
+            style: Theme.of(context).textTheme.labelMedium,
           ),
         ),
       ],

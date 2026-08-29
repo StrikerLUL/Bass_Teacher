@@ -138,6 +138,20 @@ def pick_device(requested: str) -> str:
     return "cpu"
 
 
+def _stem_receipt(source: Path, model: str, preview: Optional[float]) -> Dict[str, Any]:
+    """Identity of the audio a set of stems was made from."""
+    try:
+        size = source.stat().st_size
+    except OSError:
+        size = None
+    return {
+        "source": source.name,
+        "source_bytes": size,
+        "model": model,
+        "preview_seconds": preview,
+    }
+
+
 def separate(
     source: Path,
     out_dir: Path,
@@ -147,13 +161,32 @@ def separate(
     shifts: int,
     jobs: int,
     force: bool,
+    preview: Optional[float] = None,
 ) -> Tuple[Path, Optional[Path]]:
     """Split ``source`` into a bass stem and a backing stem via Demucs."""
     bass_path = out_dir / "bass.wav"
     backing_path = out_dir / "backing.wav"
+    receipt_path = out_dir / "stems.json"
+    receipt = _stem_receipt(source, model, preview)
+
     if bass_path.exists() and backing_path.exists() and not force:
-        log(f"stems already present, reusing (--force to redo): {bass_path.name}")
-        return bass_path, backing_path
+        # Reuse only stems made from *this* audio. Without the receipt, a 30s
+        # --preview run left short stems behind and every later full run
+        # silently reused them, so the song stayed 30 seconds long.
+        try:
+            previous = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = None
+        if previous == receipt:
+            log(f"stems already present, reusing (--force to redo): {bass_path.name}")
+            return bass_path, backing_path
+        if previous is None:
+            log("stems present but unlabelled — re-separating to be sure")
+        else:
+            was = previous.get("preview_seconds")
+            log(f"stems were made from a different run "
+                f"({'preview ' + str(was) + 's' if was else 'full song'}"
+                f"{', model ' + str(previous.get('model'))}) — re-separating")
 
     if find_spec("demucs") is None:
         fail(
@@ -195,6 +228,7 @@ def separate(
         backing_path = None  # type: ignore[assignment]
 
     shutil.rmtree(work_dir, ignore_errors=True)
+    receipt_path.write_text(json.dumps(receipt, indent=1), encoding="utf-8")
     log(f"stems: {bass_path.name}" + (f" + {backing_path.name}" if backing_path else ""))
     return bass_path, backing_path
 
@@ -572,6 +606,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             audio, out_dir,
             model=args.model, device=pick_device(args.device),
             shifts=args.shifts, jobs=args.jobs, force=args.force,
+            preview=args.preview,
         )
 
     # ---- stage 2: transcription --------------------------------------------
