@@ -8,10 +8,11 @@
 
 Stages
     1. Demucs (htdemucs)       -> bass.wav + backing.wav
-    2. torchcrepe (or Basic Pitch, --engine) -> raw note events
-    3. Clean-up                -> de-ghosted, monophonic, in-range notes
-    4. fretboard.py            -> string/fret per note (minimal hand travel)
-    5. JSON                    -> consumed by the Flutter app
+    2. librosa onsets          -> where the string was actually plucked
+    3. torchcrepe (or Basic Pitch, --engine) -> raw note events
+    4. Clean-up                -> de-ghosted, monophonic, in-range, on the beat
+    5. fretboard.py            -> string/fret per note (minimal hand travel)
+    6. JSON                    -> consumed by the Flutter app
 
 Output layout (one directory per track):
 
@@ -25,6 +26,7 @@ Output layout (one directory per track):
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import shutil
 import statistics
@@ -33,7 +35,7 @@ import sys
 import time
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any, Dict, List, NoReturn, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NoReturn, Optional, Sequence, Set, Tuple
 
 try:  # works both as `python processor.py` and `python -m backend.processor`
     from .fretboard import (
@@ -253,7 +255,7 @@ def separate(
 
 
 # --------------------------------------------------------------------------- #
-# Stage 2 — Transcription
+# Stage 2 — Attacks, and Stage 3 — Transcription
 # --------------------------------------------------------------------------- #
 
 ENGINES = ("basic-pitch", "torchcrepe")
@@ -270,6 +272,52 @@ def _pitch_window(
     low = min_freq if min_freq is not None else midi_to_hz(instrument.lowest_midi) * 0.97
     high = max_freq if max_freq is not None else midi_to_hz(instrument.highest_midi) * 1.03
     return low, high
+
+
+def detect_onsets(path: Path, *, sensitivity: float, hop_ms: float = 5.0) -> List[float]:
+    """Note attacks in the bass stem, in seconds.
+
+    A pitch tracker cannot see a repeated note. Eight straight eighths on an
+    open E are one unbroken f0, so any rule that cuts where the pitch moves
+    reports them as a single note lasting a bar — and dense repeated notes are
+    most of what this tool exists for. The attacks are plainly there in the
+    waveform, so they are found separately and handed on: the segmenter cuts at
+    them, `merge_repeats` refuses to undo those cuts, and `align_to_onsets`
+    trusts them over the tracker's own timing.
+    """
+    if find_spec("librosa") is None or find_spec("numpy") is None:
+        log("onsets: librosa not available, skipping")
+        return []
+
+    import librosa
+    import numpy as np
+
+    try:
+        audio, rate = librosa.load(str(path), sr=22050, mono=True)
+    except Exception as exc:
+        log(f"onsets: could not load audio ({exc})")
+        return []
+    if audio.size == 0:
+        return []
+
+    hop = max(1, int(round(rate * hop_ms / 1000.0)))
+    envelope = librosa.onset.onset_strength(y=audio, sr=rate, hop_length=hop)
+    times = librosa.onset.onset_detect(
+        onset_envelope=envelope,
+        sr=rate,
+        hop_length=hop,
+        units="time",
+        # The peak of the onset envelope sits part-way *into* the attack. The
+        # note starts at the foot of the rise, which is what backtracking finds,
+        # and a note drawn late is exactly what a play-along trainer must not do.
+        backtrack=True,
+        delta=0.07 / max(sensitivity, 0.05),
+        wait=int(round(0.03 * rate / hop)),
+    )
+    onsets = sorted(float(t) for t in np.asarray(times).ravel().tolist())
+    log(f"onsets: {len(onsets)} attacks in the bass stem "
+        f"(sensitivity {sensitivity:g})")
+    return onsets
 
 
 def transcribe_basic_pitch(
@@ -340,15 +388,23 @@ def transcribe_torchcrepe(
     min_freq: Optional[float],
     max_freq: Optional[float],
     periodicity: float,
+    keep_periodicity: Optional[float],
     hop_ms: float,
     model: str,
     device: str,
+    onsets: Sequence[float] = (),
+    attack_ms: float = 30.0,
+    noise_floor_db: float = 24.0,
 ) -> List[NoteEvent]:
     """Monophonic pitch tracking, which is what an isolated bass stem is.
 
     Basic Pitch is a general polyphonic transcriber; CREPE only ever reports one
     f0 per frame. That is a better match for a separated bass, but it means this
     path cannot represent a double-stop at all.
+
+    What comes back from the tracker is a pitch per frame, not notes. Turning
+    one into the other is `segment_pitch_track`, and it is the stage that
+    decides whether a repeated note is heard as one note or eight.
     """
     for module in ("torchcrepe", "librosa", "numpy"):
         if find_spec(module) is None:
@@ -373,9 +429,11 @@ def transcribe_torchcrepe(
     rate = torchcrepe.SAMPLE_RATE
     audio, _ = librosa.load(str(bass_path), sr=rate, mono=True)
     hop = max(1, int(round(rate * hop_ms / 1000.0)))
+    keep = periodicity * 0.6 if keep_periodicity is None else keep_periodicity
+    keep = min(keep, periodicity)
 
     log(f"torchcrepe: {model} model on {device}, {low:.1f}–{high:.1f} Hz, "
-        f"hop={hop_ms:g}ms, periodicity>={periodicity}")
+        f"hop={hop_ms:g}ms, periodicity {keep:.2f}→{periodicity:.2f}")
 
     pitch, confidence = torchcrepe.predict(
         torch.from_numpy(audio).unsqueeze(0),
@@ -395,46 +453,32 @@ def transcribe_torchcrepe(
     f0 = pitch.squeeze(0).cpu().numpy()
     conf = confidence.squeeze(0).cpu().numpy()
     semitones = librosa.hz_to_midi(np.clip(f0, 1e-6, None))
-    voiced = np.isfinite(conf) & np.isfinite(semitones) & (conf >= periodicity)
-    log(f"torchcrepe: {int(voiced.sum())}/{len(f0)} voiced frames")
+    # -inf periodicity is how torchcrepe says "nothing here". It has to read as
+    # unvoiced rather than reach the segmenter as a NaN and compare false
+    # against every threshold it meets.
+    usable = np.isfinite(conf) & np.isfinite(semitones)
+    conf = np.where(usable, conf, 0.0)
+    semitones = np.where(usable, semitones, 0.0)
+    log(f"torchcrepe: {int((conf >= periodicity).sum())}/{len(f0)} voiced frames")
 
     energy = librosa.feature.rms(y=audio, frame_length=2048, hop_length=hop)[0]
 
-    events: List[NoteEvent] = []
-    seg_start = -1
-    seg_pitch = 0.0
-    seg_values: List[float] = []
+    events = segment_pitch_track(
+        semitones.tolist(),
+        conf.tolist(),
+        energy.tolist(),
+        hop_sec=hop / rate,
+        onsets=onsets,
+        start_threshold=periodicity,
+        keep_threshold=keep,
+        min_note_sec=min_note_ms / 1000.0,
+        attack_sec=attack_ms / 1000.0,
+    )
 
-    def flush(end_index: int) -> None:
-        if seg_start < 0 or not seg_values:
-            return
-        start_t = seg_start * hop / rate
-        end_t = end_index * hop / rate
-        if end_t - start_t < min_note_ms / 1000.0:
-            return
-        span = energy[seg_start:max(seg_start + 1, min(end_index, len(energy)))]
-        events.append(NoteEvent(
-            start=start_t,
-            end=end_t,
-            midi=int(round(float(np.median(seg_values)))),
-            velocity=float(np.mean(span)) if len(span) else 1.0,
-        ))
-
-    # A note runs while the tracked pitch stays within half a semitone of where
-    # it started; anything further is a new note, not vibrato.
-    for i in range(len(f0) + 1):
-        active = i < len(f0) and bool(voiced[i])
-        if active and seg_start >= 0 and abs(semitones[i] - seg_pitch) < 0.6:
-            seg_values.append(float(semitones[i]))
-            continue
-        flush(i)
-        if active:
-            seg_start = i
-            seg_pitch = float(round(semitones[i]))
-            seg_values = [float(semitones[i])]
-        else:
-            seg_start = -1
-            seg_values = []
+    events, quiet = drop_below_noise_floor(events, noise_floor_db)
+    if quiet:
+        log(f"torchcrepe: {quiet} note(s) more than {noise_floor_db:g} dB under "
+            f"the median note dropped as separation bleed")
 
     peak = max((n.velocity for n in events), default=0.0)
     if peak > 0:
@@ -443,6 +487,149 @@ def transcribe_torchcrepe(
 
     log(f"torchcrepe: {len(events)} raw note events")
     return events
+
+
+def segment_pitch_track(
+    semitones: Sequence[float],
+    confidence: Sequence[float],
+    energy: Sequence[float],
+    *,
+    hop_sec: float,
+    start_threshold: float,
+    keep_threshold: float,
+    min_note_sec: float,
+    onsets: Sequence[float] = (),
+    pitch_tolerance: float = 0.6,
+    attack_sec: float = 0.03,
+) -> List[NoteEvent]:
+    """Turn a frame-wise pitch track into notes.
+
+    Three rules, and each one is here because the obvious single rule — cut
+    wherever the pitch moves — gets a bass line wrong in a particular way.
+
+    **Attacks cut.** A repeated note has no pitch change to cut on, so a
+    pitch-only rule reports eight eighths on an open E as one note lasting a
+    bar. `onsets` are the attacks heard in the stem, and a note is cut at every
+    one it contains. An attack inside the first `min_note_sec` of a note is that
+    note's own attack, and is ignored.
+
+    **Voicing is hysteretic.** One threshold would have to be strict enough to
+    reject bleed from the separation and lenient enough not to chop a note in
+    half wherever the tracker wobbles, and no single value is both. Two do not
+    conflict: a note needs `start_threshold` to begin and only `keep_threshold`
+    to carry on.
+
+    **Pitch comes from the sustain.** The attack of a plucked string is
+    inharmonic and the tracker wanders through it, so a plain median over the
+    whole note is dragged towards whatever the first few frames guessed. The
+    first `attack_sec` are dropped from the *pitch* estimate — never from the
+    note's timing — and the rest combined as a confidence-weighted median.
+
+    Pure Python over plain sequences, so it is testable without torch, librosa
+    or an audio file. `velocity` comes back as the segment's peak level, on
+    whatever scale `energy` uses; the caller normalises.
+    """
+    frames = min(len(semitones), len(confidence))
+    if frames == 0 or hop_sec <= 0:
+        return []
+
+    keep_threshold = min(keep_threshold, start_threshold)
+    attack_frames = max(0, int(round(attack_sec / hop_sec)))
+    min_note_frames = min_note_sec / hop_sec
+    cuts = {int(round(t / hop_sec)) for t in onsets}
+
+    events: List[NoteEvent] = []
+    seg_start = -1
+    seg_ref = 0.0
+
+    def flush(end: int) -> None:
+        nonlocal seg_start
+        if seg_start < 0:
+            return
+        if (end - seg_start) * hop_sec >= min_note_sec:
+            span = energy[seg_start:max(seg_start + 1, min(end, len(energy)))]
+            events.append(NoteEvent(
+                start=seg_start * hop_sec,
+                end=end * hop_sec,
+                midi=_sustained_pitch(
+                    semitones, confidence, seg_start, end, attack_frames
+                ),
+                velocity=max(span) if len(span) else 0.0,
+            ))
+        seg_start = -1
+
+    for i in range(frames + 1):
+        conf = confidence[i] if i < frames else 0.0
+        pitch = semitones[i] if i < frames else 0.0
+        continuing = seg_start >= 0
+
+        if continuing:
+            steady = (conf >= keep_threshold
+                      and abs(pitch - seg_ref) < pitch_tolerance)
+            replucked = i in cuts and (i - seg_start) >= min_note_frames
+            if steady and not replucked:
+                continue
+            flush(i)
+
+        # Straight out of a note the tracker is already committed, so the next
+        # one needs only `keep_threshold`; starting from silence needs the
+        # stricter value, which is what keeps bleed from becoming a note.
+        floor = keep_threshold if continuing else start_threshold
+        if i < frames and conf >= floor:
+            seg_start = i
+            seg_ref = round(pitch)
+
+    return events
+
+
+def _sustained_pitch(
+    semitones: Sequence[float],
+    confidence: Sequence[float],
+    start: int,
+    end: int,
+    attack_frames: int,
+) -> int:
+    """Confidence-weighted median semitone over a note's sustain."""
+    first = start + attack_frames if end - start > attack_frames + 2 else start
+    pairs = sorted(
+        (semitones[i], max(confidence[i], 0.0))
+        for i in range(first, min(end, len(semitones)))
+    )
+    if not pairs:
+        return int(round(semitones[min(start, len(semitones) - 1)]))
+
+    total = sum(weight for _, weight in pairs)
+    if total <= 0:
+        return int(round(sum(value for value, _ in pairs) / len(pairs)))
+    seen = 0.0
+    for value, weight in pairs:
+        seen += weight
+        if seen >= total / 2:
+            return int(round(value))
+    return int(round(pairs[-1][0]))
+
+
+def drop_below_noise_floor(
+    events: List[NoteEvent], floor_db: float
+) -> Tuple[List[NoteEvent], int]:
+    """Drop notes far quieter than the part around them.
+
+    Separation leaves a little of the rest of the mix in the bass stem, and a
+    pitch tracker will happily follow it. What marks those out is not their
+    pitch but their level: bleed sits tens of dB under the notes actually
+    played. The floor is relative to the median note rather than absolute, so it
+    carries between a quiet recording and a loud one, and it is not applied at
+    all to a handful of notes, where a median means nothing.
+    """
+    if floor_db <= 0 or len(events) < 8:
+        return events, 0
+    levels = sorted(note.velocity for note in events)
+    median = levels[len(levels) // 2]
+    if median <= 0:
+        return events, 0
+    floor = median * (10.0 ** (-floor_db / 20.0))
+    kept = [note for note in events if note.velocity >= floor]
+    return kept, len(events) - len(kept)
 
 
 def write_midi(events: Sequence[NoteEvent], path: Path) -> None:
@@ -467,7 +654,7 @@ def write_midi(events: Sequence[NoteEvent], path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Stage 3 — Clean-up
+# Stage 4 — Clean-up
 # --------------------------------------------------------------------------- #
 
 def to_events(raw: Sequence[Tuple[Any, ...]]) -> List[NoteEvent]:
@@ -515,18 +702,89 @@ def remove_octave_ghosts(
     return [n for n, ok in zip(events, keep) if ok]
 
 
-def merge_repeats(events: List[NoteEvent], max_gap: float) -> List[NoteEvent]:
-    """Rejoin one sustained note that the model split into fragments."""
+def merge_repeats(
+    events: List[NoteEvent], max_gap: float, onsets: Sequence[float] = ()
+) -> List[NoteEvent]:
+    """Rejoin one sustained note that the model split into fragments.
+
+    A detected attack between two fragments makes them two notes however small
+    the gap. Without that check this stage would undo every repeated-note cut
+    the segmenter just made: the two halves of a re-plucked open E are the same
+    pitch, end to end, which is exactly the shape a fragment has.
+    """
+    ordered = sorted(onsets)
     merged: List[NoteEvent] = []
     for note in events:
+        target = None
         for prev in reversed(merged[-4:]):
-            if prev.midi == note.midi and note.start - prev.end <= max_gap:
-                prev.end = max(prev.end, note.end)
-                prev.velocity = max(prev.velocity, note.velocity)
-                break
-        else:
+            if prev.midi != note.midi or note.start - prev.end > max_gap:
+                continue
+            if not _onset_within(ordered, min(prev.end, note.start), note.start):
+                target = prev
+            break
+        if target is None:
             merged.append(note)
+        else:
+            target.end = max(target.end, note.end)
+            target.velocity = max(target.velocity, note.velocity)
     return merged
+
+
+def _onset_within(
+    onsets: Sequence[float], low: float, high: float, tolerance: float = 0.015
+) -> bool:
+    """Is there a detected attack in ``[low, high]``, give or take a frame?"""
+    if not onsets:
+        return False
+    index = bisect.bisect_left(onsets, low - tolerance)
+    return index < len(onsets) and onsets[index] <= high + tolerance
+
+
+def align_to_onsets(
+    events: List[NoteEvent], onsets: Sequence[float], tolerance: float
+) -> Tuple[List[NoteEvent], int]:
+    """Move each note start onto the attack the audio actually has.
+
+    A pitch tracker reports a note once its pitch has settled, which is a little
+    after the string was plucked. The error is small, but it is systematic and
+    in one direction, and a play-along trainer draws it: every note sits a
+    fraction late against the beat. Snapping to an attack within `tolerance`
+    takes it out without inventing timing where no attack was found.
+    """
+    if not events or not onsets:
+        return events, 0
+
+    ordered = sorted(onsets)
+    moved = 0
+    for index, note in enumerate(events):
+        target = _nearest(ordered, note.start)
+        if target is None or abs(target - note.start) > tolerance:
+            continue
+        # Never behind the note before it, and never past its own end.
+        floor = events[index - 1].start + 1e-3 if index else 0.0
+        ceiling = note.end - 1e-3
+        if ceiling <= floor:
+            continue
+        snapped = min(max(target, floor), ceiling)
+        if abs(snapped - note.start) > 1e-6:
+            note.start = snapped
+            moved += 1
+    events.sort(key=lambda n: (n.start, n.midi))
+    return events, moved
+
+
+def _nearest(values: Sequence[float], target: float) -> Optional[float]:
+    """Closest entry of a sorted sequence, or None when it is empty."""
+    if not values:
+        return None
+    index = bisect.bisect_left(values, target)
+    best: Optional[float] = None
+    for candidate in (index - 1, index):
+        if 0 <= candidate < len(values):
+            value = values[candidate]
+            if best is None or abs(value - target) < abs(best - target):
+                best = value
+    return best
 
 
 def make_monophonic(events: List[NoteEvent], simultaneity: float) -> List[NoteEvent]:
@@ -552,47 +810,74 @@ def make_monophonic(events: List[NoteEvent], simultaneity: float) -> List[NoteEv
     return out
 
 
-def _band_energy(samples, sample_rate: int, freq: float, width: float = 0.04) -> float:
+def _spectrum(samples, sample_rate: int, size: int = 16384):
+    """Magnitude spectrum of one window, with the frequency of every bin."""
     import numpy as np
 
-    size = max(len(samples), 16384)
-    spectrum = np.abs(np.fft.rfft(samples * np.hanning(len(samples)), n=size))
-    freqs = np.fft.rfftfreq(size, 1.0 / sample_rate)
-    band = (freqs > freq * (1 - width)) & (freqs < freq * (1 + width))
-    return float(spectrum[band].sum())
+    length = max(size, len(samples))
+    window = np.hanning(len(samples))
+    return (
+        np.abs(np.fft.rfft(samples * window, n=length)),
+        np.fft.rfftfreq(length, 1.0 / sample_rate),
+    )
 
 
-def fix_octave_outliers(
-    events: List[NoteEvent],
-    instrument: Instrument,
-    bass_path: Optional[Path],
-    window: float,
-    threshold: int,
-) -> Tuple[List[NoteEvent], int]:
-    """Pull a stray note down an octave, but only when the audio agrees.
+def _harmonic_score(mags, freqs, freq: float, partials: int = 5) -> float:
+    """How much of the spectrum a fundamental at `freq` would account for.
 
-    Basic Pitch does sometimes lock onto a harmonic instead of the fundamental,
-    and one such note is enough to send the fingering search to the 24th fret
-    and back. Context alone cannot identify them, though: measured against a
-    fast J-Pop line, a "10 semitones above the local median" rule moved 89
-    notes and the bass stem's own spectrum disagreed with 86 of them — the part
-    genuinely climbs.
+    One bin cannot tell a fundamental from a harmonic: at 41 Hz the second
+    harmonic is routinely the louder of the two, which is why octave errors
+    happen at all. The comb can — a pitch an octave up has to explain every
+    partial it claims, and it never does, because the true fundamental's odd
+    harmonics fall in the gaps between its own.
 
-    So context only nominates candidates. Each one is then checked against the
-    stem, and the shift happens only if the octave below actually carries at
-    least as much energy as the pitch that was reported.
+    Partials are weighted down as they climb, and every band is at least two
+    bins wide: a percentage-width band around a 41 Hz fundamental is narrower
+    than the bin spacing, so a proportional width on its own can select nothing.
     """
-    if not events or bass_path is None or not bass_path.exists():
-        return events, 0
-    if find_spec("numpy") is None or find_spec("soundfile") is None:
-        return events, 0
+    if len(freqs) < 2:
+        return 0.0
+    bin_hz = float(freqs[1] - freqs[0])
+    total = 0.0
+    for partial in range(1, partials + 1):
+        centre = freq * partial
+        if centre >= float(freqs[-1]):
+            break
+        half = max(centre * 0.03, 2.0 * bin_hz)
+        band = (freqs >= centre - half) & (freqs <= centre + half)
+        if not band.any():
+            continue
+        total += float(mags[band].max()) * (0.9 ** (partial - 1))
+    return total
 
-    import soundfile as sf
 
-    # Nominate: notes sitting far above their own neighbourhood.
+OCTAVE_SCOPES = ("all", "strays", "off")
+
+# Long enough to resolve a 41 Hz fundamental, short enough that only the note's
+# own sustain is in the window.
+_ANALYSIS_SEC = 0.25
+
+
+def _note_window(handle, note: NoteEvent, rate: int):
+    """Samples from the steady part of a note, mono; None if there are too few."""
+    skip = min(0.02, max(note.duration, 0.0) * 0.2)
+    handle.seek(max(0, int((note.start + skip) * rate)))
+    count = int(min(max(note.duration, 0.05), _ANALYSIS_SEC) * rate)
+    frames = handle.read(max(count, 1024), dtype="float32")
+    if len(frames) < 1024:
+        return None
+    if getattr(frames, "ndim", 1) > 1:
+        frames = frames.mean(axis=1)
+    return frames
+
+
+def _stray_notes(
+    events: Sequence[NoteEvent], window: float, threshold: int
+) -> Set[int]:
+    """Notes sitting far above their own neighbourhood, as a set of ``id()``."""
     starts = [n.start for n in events]
     lo = hi = 0
-    candidates: List[NoteEvent] = []
+    strays: Set[int] = set()
     for i, note in enumerate(events):
         while lo < len(starts) and starts[lo] < note.start - window:
             lo += 1
@@ -602,27 +887,71 @@ def fix_octave_outliers(
         if len(neighbours) < 4:
             continue
         if note.midi - statistics.median(neighbours) >= threshold:
-            candidates.append(note)
-    if not candidates:
+            strays.add(id(note))
+    return strays
+
+
+def fix_octave_errors(
+    events: List[NoteEvent],
+    instrument: Instrument,
+    bass_path: Optional[Path],
+    *,
+    window: float,
+    threshold: int,
+    scope: str = "all",
+    margin: float = 1.2,
+    stray_margin: float = 1.0,
+) -> Tuple[List[NoteEvent], int]:
+    """Pull a note down an octave when the stem says its fundamental is lower.
+
+    Both engines sometimes lock onto the second harmonic of a low bass note, and
+    one such note is enough to send the fingering search to the 24th fret and
+    back. Context cannot identify them, though: measured against a fast J-Pop
+    line, a "10 semitones above the local median" rule moved 89 notes and the
+    bass stem's own spectrum disagreed with 86 of them — the part genuinely
+    climbs.
+
+    So the audio decides, and with `scope="all"` it is asked about every note
+    rather than only the ones that look odd out of context. An octave error in
+    the middle of the part's own range is invisible to a median and plain in the
+    spectrum, and those are the ones that were being missed. Each note is scored
+    as a harmonic comb against the same comb an octave down and moves only if
+    the lower one wins by `margin`; notes that context *does* nominate as strays
+    are held to the gentler `stray_margin`, since two independent signals
+    already agree about them.
+
+    The default margin comes from measurement rather than taste: over synthesised
+    bass partials, a genuine note scores 0.57-0.64 against the octave below it
+    and an octave error scores 1.17-1.77, so 1.2 sits in the gap with room on
+    both sides. `test_transcribe.py` asserts that separation.
+    """
+    if not events or bass_path is None or not bass_path.exists():
+        return events, 0
+    if scope == "off":
+        return events, 0
+    if find_spec("numpy") is None or find_spec("soundfile") is None:
         return events, 0
 
-    # Confirm against the stem.
+    import soundfile as sf
+
+    strays = _stray_notes(events, window, threshold)
+    checked = events if scope == "all" else [n for n in events if id(n) in strays]
+    if not checked:
+        return events, 0
+
     shifted = 0
     with sf.SoundFile(str(bass_path)) as handle:
         rate = handle.samplerate
-        for note in candidates:
+        for note in checked:
+            required = stray_margin if id(note) in strays else margin
             while note.midi - 12 >= instrument.lowest_midi:
-                handle.seek(max(0, int(note.start * rate)))
-                frames = handle.read(
-                    max(int(max(note.duration, 0.05) * rate), 1024), dtype="float32"
-                )
-                if len(frames) < 1024:
+                frames = _note_window(handle, note, rate)
+                if frames is None:
                     break
-                if getattr(frames, "ndim", 1) > 1:
-                    frames = frames.mean(axis=1)
-                reported = _band_energy(frames, rate, midi_to_hz(note.midi))
-                lower = _band_energy(frames, rate, midi_to_hz(note.midi - 12))
-                if lower < reported:
+                mags, freqs = _spectrum(frames, rate)
+                here = _harmonic_score(mags, freqs, midi_to_hz(note.midi))
+                below = _harmonic_score(mags, freqs, midi_to_hz(note.midi - 12))
+                if below < here * required:
                     break  # the audio backs the higher pitch: leave it alone
                 note.midi -= 12
                 note.octave_shift -= 1
@@ -640,7 +969,7 @@ def fit_to_instrument(events: List[NoteEvent], instrument: Instrument) -> List[N
 
 
 # --------------------------------------------------------------------------- #
-# Stage 4b — Tempo
+# Stage 5b — Tempo
 # --------------------------------------------------------------------------- #
 
 def detect_tempo(
@@ -692,7 +1021,7 @@ def detect_tempo(
 
 
 # --------------------------------------------------------------------------- #
-# Stage 5 — Document
+# Stage 6 — Document
 # --------------------------------------------------------------------------- #
 
 def build_document(
@@ -784,8 +1113,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     group.add_argument("--crepe-model", default="full", choices=["tiny", "full"],
                        help="torchcrepe network size")
     group.add_argument("--periodicity", type=float, default=0.20,
-                       help="torchcrepe voicing threshold; lower keeps more notes. "
-                            "0.20 measured best on the one song this was tuned on")
+                       help="torchcrepe voicing threshold to *start* a note; "
+                            "lower keeps more notes. 0.20 measured best on the "
+                            "one song this was tuned on")
+    group.add_argument("--keep-periodicity", type=float,
+                       help="voicing threshold to *continue* a note; the "
+                            "hysteresis that stops a wobble cutting a note in "
+                            "half (default: 60%% of --periodicity)")
+    group.add_argument("--attack-ms", type=float, default=30.0,
+                       help="ignore this much of each attack when deciding the "
+                            "note's pitch; the pluck itself is inharmonic")
+    group.add_argument("--noise-floor-db", type=float, default=24.0,
+                       help="drop notes this far below the median note level, "
+                            "which is where separation bleed sits; 0 disables")
     group.add_argument("--crepe-hop-ms", type=float, default=10.0,
                        help="torchcrepe analysis hop")
     group.add_argument("--onset-threshold", type=float, default=0.5,
@@ -797,7 +1137,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     group.add_argument("--min-freq", type=float, help="default: lowest note of the tuning")
     group.add_argument("--max-freq", type=float, help="default: highest fretted note")
     group.add_argument("--merge-gap-ms", type=float, default=30.0,
-                       help="rejoin same-pitch fragments closer than this")
+                       help="rejoin same-pitch fragments closer than this, "
+                            "unless an attack was detected between them")
     group.add_argument("--ghost-window-ms", type=float, default=50.0,
                        help="onset window for octave-ghost detection")
     group.add_argument("--ghost-ratio", type=float, default=1.0,
@@ -807,11 +1148,29 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     group.add_argument("--polyphonic", action="store_true",
                        help="keep overlapping notes instead of collapsing to one voice")
     group.add_argument("--no-octave-fix", action="store_true",
-                       help="keep notes that sit far above the surrounding line")
+                       help="skip the octave check entirely (same as "
+                            "--octave-check off)")
+    group.add_argument("--octave-check", choices=OCTAVE_SCOPES, default="all",
+                       help="which notes to check against the stem's spectrum: "
+                            "every one, or only those that look odd in context")
+    group.add_argument("--octave-margin", type=float, default=1.2,
+                       help="how much better the octave below has to fit before "
+                            "an ordinary note is moved down to it")
     group.add_argument("--octave-threshold", type=int, default=10,
                        help="semitones above the local median that counts as a stray")
     group.add_argument("--octave-window", type=float, default=2.0,
                        help="seconds of context used to judge a stray note")
+
+    group = parser.add_argument_group("attacks")
+    group.add_argument("--no-onsets", action="store_true",
+                       help="do not detect attacks; repeated notes then come "
+                            "back as one long note, since their pitch never "
+                            "changes")
+    group.add_argument("--onset-sensitivity", type=float, default=1.0,
+                       help="higher finds more attacks (and more false ones)")
+    group.add_argument("--onset-align-ms", type=float, default=45.0,
+                       help="snap a note start to an attack this close to it; "
+                            "0 leaves the tracker's own timing alone")
 
     group = parser.add_argument_group("tempo")
     group.add_argument("--bpm", type=float,
@@ -876,7 +1235,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             preview=args.preview,
         )
 
-    # ---- stage 2: transcription --------------------------------------------
+    # ---- stage 2: attacks ---------------------------------------------------
+    # Found once, from the stem, and used by three stages after it: the
+    # segmenter cuts on them, merge_repeats refuses to undo those cuts, and note
+    # starts are snapped to them. Neither engine can find a repeated note on its
+    # own, because a repeated note has no pitch change to find.
+    onsets: List[float] = []
+    if not args.no_onsets:
+        onsets = detect_onsets(bass_path, sensitivity=args.onset_sensitivity)
+
+    # ---- stage 3: transcription ---------------------------------------------
     if args.engine == "torchcrepe":
         events = transcribe_torchcrepe(
             bass_path,
@@ -885,9 +1253,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             min_freq=args.min_freq,
             max_freq=args.max_freq,
             periodicity=args.periodicity,
+            keep_periodicity=args.keep_periodicity,
             hop_ms=args.crepe_hop_ms,
             model=args.crepe_model,
             device=pick_device(args.device),
+            onsets=onsets,
+            attack_ms=args.attack_ms,
+            noise_floor_db=args.noise_floor_db,
         )
     else:
         events = transcribe_basic_pitch(
@@ -900,36 +1272,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             max_freq=args.max_freq,
         )
 
-    # ---- stage 3: clean-up --------------------------------------------------
+    # ---- stage 4: clean-up --------------------------------------------------
     events.sort(key=lambda n: (n.start, n.midi))
     before = len(events)
     events = drop_short(events, args.min_note_ms / 1000.0)
     events = remove_octave_ghosts(
         events, args.ghost_window_ms / 1000.0, args.ghost_ratio
     )
-    events = merge_repeats(events, args.merge_gap_ms / 1000.0)
+    events = merge_repeats(events, args.merge_gap_ms / 1000.0, onsets)
+    if onsets and args.onset_align_ms > 0:
+        events, moved = align_to_onsets(
+            events, onsets, args.onset_align_ms / 1000.0
+        )
+        log(f"onsets: {moved}/{len(events)} note start(s) snapped to a "
+            f"detected attack")
     if not args.polyphonic:
         events = make_monophonic(events, args.simultaneity_ms / 1000.0)
-    if not args.no_octave_fix:
-        events, shifted = fix_octave_outliers(
-            events, instrument, bass_path, args.octave_window, args.octave_threshold
+    octave_scope = "off" if args.no_octave_fix else args.octave_check
+    if octave_scope != "off":
+        events, shifted = fix_octave_errors(
+            events, instrument, bass_path,
+            window=args.octave_window,
+            threshold=args.octave_threshold,
+            scope=octave_scope,
+            margin=args.octave_margin,
         )
-        log(f"octave fix: {shifted} stray note(s) confirmed against the stem "
-            f"and pulled down an octave")
+        log(f"octave fix: {shifted} note(s) contradicted by the stem's own "
+            f"spectrum and pulled down an octave (checked: {octave_scope})")
     events = fit_to_instrument(events, instrument)
     log(f"clean-up: {before} -> {len(events)} notes")
     if not events:
         fail("no notes survived clean-up.",
-             "try --onset-threshold 0.3 --frame-threshold 0.2")
+             "torchcrepe: try --periodicity 0.10 --noise-floor-db 0; "
+             "basic-pitch: try --onset-threshold 0.3 --frame-threshold 0.2")
 
-    # ---- stage 4: fingering -------------------------------------------------
+    # ---- stage 5: fingering -------------------------------------------------
     assign_fingerings(
         events, instrument, FingeringConfig(max_fret=args.max_fret)
     )
     annotate_hand_positions(events)
     assign_fingers(events)
 
-    # ---- stage 4b: tempo ----------------------------------------------------
+    # ---- stage 5b: tempo ----------------------------------------------------
     duration, sample_rate = audio_info(bass_path)
     grid = None
     if args.bpm:
@@ -943,7 +1327,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             beats_per_bar=args.beats_per_bar, start_bpm=args.start_bpm,
         )
 
-    # ---- stage 5: document --------------------------------------------------
+    # ---- stage 6: document --------------------------------------------------
 
     # Transcribing from a stem means `source` is "bass.wav", which is not the
     # song's name. Keep whatever a previous run in this folder recorded, and
@@ -980,6 +1364,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "monophonic": not args.polyphonic,
             "engine": args.engine,
             "separator": None if args.bass_stem else f"demucs {args.model}",
+            # Recognition settings, so a track can be compared with one
+            # processed before these existed.
+            "attacks_detected": len(onsets),
+            "onset_align_ms": args.onset_align_ms if onsets else 0.0,
+            "noise_floor_db": args.noise_floor_db,
+            "octave_check": octave_scope,
         },
     )
 

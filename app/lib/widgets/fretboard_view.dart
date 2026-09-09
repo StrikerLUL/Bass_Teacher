@@ -7,6 +7,7 @@ import '../models/note_event.dart';
 import '../services/note_timeline.dart';
 import '../services/playback_clock.dart';
 import '../services/practice_scorer.dart';
+import '../services/step_walker.dart';
 
 /// Frets carrying position markers on a bass neck.
 const Set<int> _inlayFrets = {3, 5, 7, 9, 15, 17, 19, 21};
@@ -66,6 +67,12 @@ class FretboardViewModel extends ChangeNotifier {
   /// coloured by whether it was actually played.
   PracticeScorer? scorer;
 
+  /// When it is walking, the fretboard shows the note it is standing on
+  /// instead of following the clock. Same painter, same picture — the only
+  /// difference is what supplies "now", which is why a shape looks identical
+  /// whether you stepped onto it or played into it.
+  StepWalker? walker;
+
   late final int _spanFrets;
 
   /// Highest fret drawn. Fixed for the song so the picture never moves.
@@ -94,6 +101,10 @@ class FretboardViewModel extends ChangeNotifier {
   double get time => _time;
   List<NoteEvent> get active => _active;
   List<NoteEvent> get upcoming => _upcoming;
+
+  /// True while [walker] is driving the view rather than the clock.
+  bool get stepping => walker?.isActive ?? false;
+
   NoteEvent? get current => _active.isEmpty ? null : _active.first;
   NoteEvent? get next => _upcoming.isEmpty ? null : _upcoming.first;
   int get handFret => _lastHand;
@@ -118,10 +129,21 @@ class FretboardViewModel extends ChangeNotifier {
 
   /// Called once per vsync.
   void advance(double dt) {
-    // Drawn against the calibrated time, not the raw audio position.
-    _time = clock.displayPosition;
-    _active = timeline.activeAt(_time);
-    _upcoming = timeline.between(_time, _time + lookaheadSec, limit: 8);
+    final walker = this.walker;
+    if (walker != null && walker.isActive) {
+      // Stepping: "now" is wherever the walker is standing, and the notes
+      // after it are shown by position rather than by how soon they arrive —
+      // a bar's rest must not empty the strip.
+      final note = walker.note;
+      _time = note?.start ?? _time;
+      _active = note == null ? const [] : [note];
+      _upcoming = walker.lookahead(4);
+    } else {
+      // Drawn against the calibrated time, not the raw audio position.
+      _time = clock.displayPosition;
+      _active = timeline.activeAt(_time);
+      _upcoming = timeline.between(_time, _time + lookaheadSec, limit: 8);
+    }
 
     final anchor = _resolveHandFret();
     if (anchor > 0) _lastHand = anchor;
@@ -419,12 +441,18 @@ class FretboardPainter extends CustomPainter {
 
   void _paintUpcoming(Canvas canvas, double radius,
       double Function(int) xForMarker, double Function(int) yForString) {
-    for (final note in vm.upcoming) {
+    for (var i = 0; i < vm.upcoming.length; i++) {
+      final note = vm.upcoming[i];
       final string = note.string;
       final fret = note.fret;
       if (string == null || fret == null || fret == 0) continue;
 
-      final lead = (note.start - vm.time) / vm.lookaheadSec;
+      // Playing, a note fades in as it approaches. Stepping, there is no
+      // approach — the clock is stopped — so it fades by how many grips away
+      // it is instead, which keeps the same "next is brightest" reading.
+      final lead = vm.stepping
+          ? (i + 1) / (vm.upcoming.length + 1)
+          : (note.start - vm.time) / vm.lookaheadSec;
       final opacity = (1.0 - lead).clamp(0.0, 1.0) * 0.65;
       if (opacity < 0.02) continue;
 
@@ -540,6 +568,12 @@ class FretboardPainter extends CustomPainter {
   void _paintFretNumbers(
       Canvas canvas, Rect neck, int span, double Function(int) xForMarker) {
     final handLow = vm.handFret;
+    // Stepping, the whole question is "which fret", and the answer is read off
+    // this row — so the one being asked about is named in its string's colour
+    // rather than left to be counted.
+    final current = vm.stepping ? vm.current : null;
+    final onFret = (current?.fret ?? 0) > 0 ? current!.fret : null;
+
     for (var fret = 1; fret <= span; fret++) {
       final marked =
           _inlayFrets.contains(fret) || _doubleInlayFrets.contains(fret);
@@ -547,16 +581,20 @@ class FretboardPainter extends CustomPainter {
           handLow > 0 &&
           fret >= handLow &&
           fret < handLow + 4;
+      final here = fret == onFret;
       _drawText(
         canvas,
         '$fret',
         Offset(xForMarker(fret), neck.bottom + _gutterBottom / 2),
         TextStyle(
-          color: inHand
-              ? Colors.white
-              : Colors.white.withValues(alpha: marked ? 0.75 : 0.38),
-          fontSize: 11,
-          fontWeight: inHand || marked ? FontWeight.w700 : FontWeight.w400,
+          color: here
+              ? stringColour(current!.string ?? 0)
+              : inHand
+                  ? Colors.white
+                  : Colors.white.withValues(alpha: marked ? 0.75 : 0.38),
+          fontSize: here ? 14 : 11,
+          fontWeight:
+              here || inHand || marked ? FontWeight.w700 : FontWeight.w400,
         ),
       );
     }

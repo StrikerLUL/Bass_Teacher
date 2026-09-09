@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import '../models/instrument.dart';
 import '../models/note_event.dart';
@@ -16,12 +17,14 @@ import '../services/note_timeline.dart';
 import '../services/practice_scorer.dart';
 import '../services/playback_clock.dart';
 import '../services/stem_player.dart';
+import '../services/step_walker.dart';
 import '../widgets/beat_ruler.dart';
 import '../widgets/calibration_dialog.dart';
 import '../widgets/loop_controls.dart';
 import '../widgets/fingering_dialog.dart';
 import '../widgets/loop_seek_bar.dart';
 import '../widgets/score_strip.dart';
+import '../widgets/step_panel.dart';
 import '../widgets/fretboard_view.dart';
 import '../widgets/tempo_dialog.dart';
 import '../widgets/transport_controls.dart';
@@ -43,6 +46,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     with SingleTickerProviderStateMixin {
   late final PlaybackClock _clock = PlaybackClock();
   late final StemPlayer _player = StemPlayer(_clock);
+  // One index over the notes, shared by everything that reads them: the
+  // fretboard, the scorer and the walker all ask the same questions of it.
+  late final NoteTimeline _timeline = NoteTimeline(widget.transcription.notes);
+  late final StepWalker _stepper = StepWalker(_timeline);
+  Timer? _audition;
   late final FretboardViewModel _viewModel;
   Ticker? _ticker;
   Duration _lastFrame = Duration.zero;
@@ -65,17 +73,19 @@ class _PlayerScreenState extends State<PlayerScreen>
     _clock.duration = widget.transcription.duration;
     _clock.visualOffset = AppSettings.instance.visualOffset;
     _viewModel = FretboardViewModel(
-      timeline: NoteTimeline(widget.transcription.notes),
+      timeline: _timeline,
       instrument: widget.transcription.instrument,
       clock: _clock,
-    )..lowStringOnTop = AppSettings.instance.lowStringOnTop;
+    )
+      ..lowStringOnTop = AppSettings.instance.lowStringOnTop
+      ..walker = _stepper;
     final saved = AppSettings.instance.fingeringChoice(_trackKey);
     if (saved != null && saved.style < FingeringStyle.values.length) {
       _style = FingeringStyle.values[saved.style];
       _preferredFret = saved.fret;
       _applyFingering();
     }
-    _scorer = PracticeScorer(timeline: NoteTimeline(widget.transcription.notes));
+    _scorer = PracticeScorer(timeline: _timeline);
     _grid = _resolveGrid();
     _ticker = createTicker(_onFrame)..start();
     _loadAudio();
@@ -84,6 +94,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   @override
   void dispose() {
     _ticker?.dispose();
+    _audition?.cancel();
+    _stepper.dispose();
     _readings?.cancel();
     _mic?.dispose();
     _scorer.dispose();
@@ -125,6 +137,103 @@ class _PlayerScreenState extends State<PlayerScreen>
       _trackKey,
       FingeringStyle.values.indexOf(_style),
       _preferredFret,
+    );
+  }
+
+  /// Enter or leave the step-through.
+  ///
+  /// Playing along teaches timing; it cannot teach a shape you have not found
+  /// yet, because at ten notes a second the fretboard has moved on before your
+  /// hand arrives. Stepping stops the music and hands you one grip at a time.
+  Future<void> _toggleStepMode() async {
+    _cancelAudition();
+    if (_stepper.isActive) {
+      _stepper.stop();
+      setState(() {});
+      return;
+    }
+    if (_stepper.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nothing transcribed to step through.')),
+      );
+      return;
+    }
+    await _player.pause();
+    // Enter at whatever was playing, so stepping carries on from the music
+    // rather than from the top of the song.
+    _stepper.start(_clock.displayPosition);
+    _onStepChanged();
+  }
+
+  void _step(bool Function() move) {
+    if (move()) _onStepChanged();
+  }
+
+  /// Keep the transport with the walker, so pressing play carries on from the
+  /// grip you stopped at rather than from wherever the music was left.
+  void _onStepChanged() {
+    _cancelAudition();
+    final note = _stepper.note;
+    if (note != null) _player.seek(note.start);
+    if (mounted) setState(() {});
+  }
+
+  /// Play just this note, then stop back on it.
+  ///
+  /// Stepping is silent by design, but hearing the note is how you know you
+  /// have found the right one — a fretted E2 and an open E1 are not the same
+  /// sound, and reading it off the neck will not tell you that.
+  Future<void> _auditionStep() async {
+    final note = _stepper.note;
+    if (note == null || !widget.transcription.hasAudio) return;
+    _audition?.cancel();
+    await _player.seek(note.start);
+    await _player.play();
+    // The note lasts `duration` in the music; at half speed that is twice as
+    // long on the wall clock, which is what the timer runs on.
+    final rate = _clock.rate <= 0 ? 1.0 : _clock.rate;
+    final seconds = (note.duration + 0.15) / rate;
+    _audition = Timer(Duration(milliseconds: (seconds * 1000).round()), () {
+      _audition = null;
+      _player.pause();
+      _player.seek(note.start);
+      if (mounted) setState(() {});
+    });
+    if (mounted) setState(() {});
+  }
+
+  void _cancelAudition() {
+    _audition?.cancel();
+    _audition = null;
+  }
+
+  /// Leave the step-through when the song is asked to play.
+  void _togglePlay() {
+    if (_stepper.isActive && !_clock.isPlaying) {
+      _cancelAudition();
+      _stepper.stop();
+      setState(() {});
+    }
+    _player.togglePlay();
+  }
+
+  /// Arrow keys walk the part. A bass is in both your hands: a key you can hit
+  /// without looking beats a button you have to aim at.
+  Widget _withStepShortcuts(Widget child) {
+    if (!_stepper.isActive) return child;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.arrowRight):
+            () => _step(_stepper.next),
+        const SingleActivator(LogicalKeyboardKey.arrowDown):
+            () => _step(_stepper.next),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft):
+            () => _step(_stepper.previous),
+        const SingleActivator(LogicalKeyboardKey.arrowUp):
+            () => _step(_stepper.previous),
+        const SingleActivator(LogicalKeyboardKey.space): _auditionStep,
+      },
+      child: Focus(autofocus: true, child: child),
     );
   }
 
@@ -232,6 +341,12 @@ class _PlayerScreenState extends State<PlayerScreen>
         ? grid.snapToBar(seconds)
         : seconds;
     _player.seek(target);
+    // Seeking while stepping means "take me there", so the walker goes too.
+    // Left behind, the seek bar and the grip on screen would disagree about
+    // where you are.
+    if (_stepper.isActive) {
+      _step(() => _stepper.jumpTo(_stepper.indexAt(target)));
+    }
   }
 
   Future<void> _loadAudio() async {
@@ -251,7 +366,12 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     // A–B loop. Checked before the end-of-track rule so a loop ending at the
     // last bar keeps going instead of stopping.
-    if (_clock.isPlaying && !_clock.isSeeking && _loop.shouldWrap(_clock.position)) {
+    // An audition is a deliberate second of playback, not a practice pass, so
+    // it must not trip the A-B loop and jump the walker somewhere else.
+    if (_clock.isPlaying &&
+        !_clock.isSeeking &&
+        !_stepper.isActive &&
+        _loop.shouldWrap(_clock.position)) {
       _wrapLoop();
     } else if (_clock.isPlaying &&
         _clock.duration > 0 &&
@@ -290,6 +410,14 @@ class _PlayerScreenState extends State<PlayerScreen>
             },
           ),
           IconButton(
+            tooltip: _stepper.isActive
+                ? 'Back to playing along'
+                : 'Step through the grips, one note at a time',
+            icon: const Icon(Icons.directions_walk),
+            isSelected: _stepper.isActive,
+            onPressed: _toggleStepMode,
+          ),
+          IconButton(
             tooltip: (_mic?.isRunning ?? false)
                 ? 'Stop listening'
                 : 'Listen and score what I play',
@@ -317,7 +445,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           ),
         ],
       ),
-      body: Column(
+      body: _withStepShortcuts(Column(
         children: [
           if (!_loadingAudio && !widget.transcription.hasAudio)
             const _SilentModeBanner(),
@@ -330,7 +458,18 @@ class _PlayerScreenState extends State<PlayerScreen>
               lastPass: _lastSectionScore,
               onDismiss: () => setState(() => _lastSectionScore = null),
             ),
-          _NoteReadout(viewModel: _viewModel, grid: _grid, clock: _clock),
+          if (_stepper.isActive)
+            StepPanel(
+              walker: _stepper,
+              instrument: widget.transcription.instrument,
+              grid: _grid,
+              canAudition: widget.transcription.hasAudio,
+              onAudition: _auditionStep,
+              onExit: _toggleStepMode,
+              onChanged: _onStepChanged,
+            )
+          else
+            _NoteReadout(viewModel: _viewModel, grid: _grid, clock: _clock),
           LoopSeekBar(clock: _clock, loop: _loop, onSeek: _seek),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -346,12 +485,12 @@ class _PlayerScreenState extends State<PlayerScreen>
             clock: _clock,
             player: _player,
             onSeek: _seek,
-            onTogglePlay: () => _player.togglePlay(),
+            onTogglePlay: _togglePlay,
             onRateChanged: (rate) => _player.setRate(rate),
             onMixChanged: () => setState(() {}),
           ),
         ],
-      ),
+      )),
     );
   }
 }
