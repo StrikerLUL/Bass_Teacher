@@ -21,8 +21,10 @@ rings on the string they belong to.*
 |---|---|
 | **Separates the bass** | Demucs splits any song into an isolated bass stem and a backing track |
 | **Transcribes it** | torchcrepe or Basic Pitch turns the bass into notes — pitch, timing, duration |
+| **Hears the plucks** | Attacks are detected separately, so eight repeats of one note are eight notes, not one long one |
 | **Works out the fingering** | Which string and fret, and which finger, chosen so the hand barely moves |
 | **Shows it live** | A fixed, colour-coded neck that lights the string you need |
+| **Or one grip at a time** | Stop the music and step through the fingering note by note, with the string, fret and finger spelled out |
 | **Mute / solo / gain** | Play along with the band, hear the bass alone, or push it above the mix |
 | **Slow it down** | 50–100%, pitch-corrected |
 | **A–B practice loop** | With a speed ramp that steps you up as you get it clean |
@@ -96,6 +98,7 @@ Output lands in `data/<track>/`: the transcription, both stems, and a MIDI file.
 
 | Control | |
 |---|---|
+| 🚶 | Step through the grips one at a time (arrow keys; space to hear one) |
 | 🎤 | Listen and score what you play |
 | 🖐 | Fingering style, and attach a tab PDF |
 | 📏 | Tempo, bar lines, manual BPM |
@@ -129,11 +132,26 @@ thing goes wrong.
 ```
 song.mp3
    ├─ Demucs ─────────► bass.wav + backing.wav
+   │                       ├─ librosa onsets ─┐
    │                       └─ torchcrepe ──► notes ──► clean-up ──► fingering
    └──────────────────────────────────────► transcription.json ──► Flutter app
 ```
 
 A few pieces are less obvious than they look.
+
+**A pitch tracker cannot hear a repeated note.** Eight straight eighths on an
+open E are one unbroken f0, so any rule that cuts a note where the pitch moves
+reports the lot as a single note lasting a bar — and dense repeated notes are
+most of what this is for. The attacks are found separately, from the stem, and
+they are what cuts. They also stop the fragment-merging stage undoing those
+cuts, and they pull each note start onto the pluck the audio actually has.
+
+**The octave check asks the audio about every note.** Both engines sometimes
+lock onto the second harmonic of a low note. Judging that from context alone
+misses every error that lands inside the part's own range, so each note is
+scored against the stem as a harmonic comb and compared with the same comb an
+octave down. Reading one bin cannot tell a fundamental from a harmonic — at
+41 Hz the second harmonic is routinely louder — but the comb can.
 
 **Fingering is searched, not looked up.** Taking the nearest position for each
 note in turn produces tab that is correct on paper and unplayable in practice —
@@ -172,9 +190,13 @@ Deeper notes are in [`backend/README.md`](backend/README.md) and
 ## Tests
 
 ```bash
-cd backend && python test_fretboard.py && python test_tempo.py
+cd backend && python test_fretboard.py && python test_tempo.py && python test_transcribe.py
 cd app && flutter test
 ```
+
+The Python tests need nothing installed: the recognition stages work on plain
+sequences of numbers, so they run without torch, a model download or an audio
+file.
 
 The Flutter suite includes render tests that paint widgets straight to PNG in
 isolation — no screen capture, and the same image on any machine:

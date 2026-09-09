@@ -88,6 +88,45 @@ It renders the widget in isolation rather than capturing the screen, so it
 cannot pick up anything else on the desktop and produces the same image on any
 machine.
 
+## Stepping through the grips
+
+The 🚶 button in the player stops the music and hands you the part one grip at a
+time. **Back** / **Next grip**, or the arrow keys; **space** plays just the note
+you are standing on and stops back on it.
+
+This exists because playing along cannot teach a shape you have not found yet.
+At ten notes a second the fretboard has moved on before your hand arrives, so
+the fast lines this tool is built for are exactly the ones you cannot learn by
+watching them go past. Stepping is the same picture with the clock stopped.
+
+**It is the same view, not a second one.** `FretboardViewModel.advance` asks the
+walker for "now" when one is walking and the clock when it is not; everything
+downstream — the painter, the hand box, the string wash — is untouched. A shape
+therefore looks identical whether you stepped onto it or played into it, which
+is the entire point of practising it stopped.
+
+Two things are drawn differently, because the clock being stopped changes what
+they can mean:
+
+- **Upcoming notes fade by position, not by time.** Playing, a note fades in as
+  it approaches. Stepping there is no approach, so the next four grips fade by
+  how many away they are — same "next is brightest" reading, no dependence on a
+  clock that is not running.
+- **The fret you are on is named in its string's colour** along the bottom row.
+  Stepping, "which fret" is the whole question, and the answer should not have
+  to be counted.
+
+`StepWalker` owns nothing but an index. Beside the obvious moves it offers
+a **skip to where the hand moves** button, which jumps to the next note with a
+different hand position — stepping one at a time through a bar that never leaves
+one position is time spent on nothing.
+
+Entering picks up at whatever was playing rather than at the top of the song,
+and each step seeks the transport with it, so pressing play carries on from the
+grip you stopped at. Pressing play leaves step mode; the audition does not, and
+it is excluded from the A–B loop check so a loop cannot yank the walker
+somewhere else mid-note.
+
 ## Audio / picture calibration
 
 Bluetooth headsets run 100-250 ms behind, which makes the highlight look wrong
@@ -216,7 +255,9 @@ written tab; the toolbar toggles it.
 | `models/transcription.dart` | JSON parsing, stem path resolution |
 | `services/fretboard_mapper.dart` | Fingering search — Dart port of `fretboard.py`, used when a JSON has no positions |
 | `services/note_timeline.dart` | Binary-search time index |
+| `services/step_walker.dart` | The index behind the step-through |
 | `services/playback_clock.dart` | Frame-rate position extrapolation |
 | `services/stem_player.dart` | Two-player transport, mix, drift correction |
 | `widgets/fretboard_view.dart` | View model + `CustomPainter` |
+| `widgets/step_panel.dart` | One grip in words: string, fret, finger |
 | `widgets/transport_controls.dart` | Seek, speed, mute/solo |
