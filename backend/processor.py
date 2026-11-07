@@ -33,6 +33,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from importlib.util import find_spec
 from pathlib import Path
@@ -254,6 +255,41 @@ def check_torchaudio() -> None:
              "Fix: " + torch_audio_install_command(torch_version))
 
 
+def _is_ascii(text: str) -> bool:
+    return all(ord(c) < 128 for c in text)
+
+
+def demucs_workspace(source: Path, out_dir: Path) -> Tuple[Path, Path]:
+    """A scratch folder for Demucs, and the audio file to hand it.
+
+    Demucs prints the paths it works on, and a piped Python on Windows prints
+    in cp1252 — so a song title cp1252 lacks (Japanese is the usual one) killed
+    it before it separated anything, since the track folder is named after the
+    title. ``utf8_child_env`` asks for UTF-8; this makes sure nothing depends
+    on that being honoured: a temp folder, and the song copied in as ``song``.
+    """
+    try:
+        work_dir = Path(tempfile.mkdtemp(prefix="bass_demucs_"))
+    except OSError:
+        work_dir = None
+    if work_dir is None or not _is_ascii(str(work_dir)):
+        # A non-ASCII Windows user name puts %TEMP% out of reach too; the
+        # track's own folder is no worse, and the environment fix still helps.
+        if work_dir is not None:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        work_dir = out_dir / "_demucs"
+        if work_dir.exists():
+            shutil.rmtree(work_dir, ignore_errors=True)
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    if _is_ascii(str(source)):
+        return work_dir, source
+    suffix = source.suffix if _is_ascii(source.suffix) else ""
+    staged = work_dir / f"song{suffix}"
+    shutil.copyfile(source, staged)
+    return work_dir, staged
+
+
 def _stem_receipt(source: Path, model: str, preview: Optional[float]) -> Dict[str, Any]:
     """Identity of the audio a set of stems was made from."""
     try:
@@ -311,9 +347,7 @@ def separate(
         )
     check_torchaudio()
 
-    work_dir = out_dir / "_demucs"
-    if work_dir.exists():
-        shutil.rmtree(work_dir, ignore_errors=True)
+    work_dir, demucs_input = demucs_workspace(source, out_dir)
 
     command = [
         sys.executable, "-m", "demucs",
@@ -323,15 +357,17 @@ def separate(
         "--shifts", str(shifts),
         "-j", str(jobs),
         "-o", str(work_dir),
-        str(source),
+        str(demucs_input),
     ]
     log(f"demucs: {model} on {device} (shifts={shifts}) — this is the slow part")
     result = subprocess.run(command, env=utf8_child_env())
     if result.returncode != 0:
+        shutil.rmtree(work_dir, ignore_errors=True)
         fail(f"demucs exited with code {result.returncode}")
 
     produced = sorted(work_dir.rglob(DEMUCS_BASS_STEM))
     if not produced:
+        shutil.rmtree(work_dir, ignore_errors=True)
         fail(f"demucs produced no {DEMUCS_BASS_STEM} under {work_dir}")
     stem_dir = produced[0].parent
 
