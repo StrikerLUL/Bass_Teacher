@@ -110,6 +110,9 @@ class TranscriptionJob extends ChangeNotifier {
           interpreter,
           arguments,
           workingDirectory: backendDir.path,
+          // A piped Python on Windows prints in cp1252 and crashes on the
+          // first title character it lacks; the app decodes UTF-8 anyway.
+          environment: const {'PYTHONIOENCODING': 'utf-8:replace'},
         );
         lastLaunchError = null;
         break;

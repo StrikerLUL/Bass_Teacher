@@ -60,8 +60,11 @@ If you want a particular CUDA build, install torch *first*, so pip does not
 resolve the CPU-only wheel:
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu126
 ```
+
+Keep torch and torchaudio at the same version, and below 2.9 — see
+[`backend/README.md`](backend/README.md).
 
 **App.** This repository holds `lib/`, `test/`, `pubspec.yaml` and the Windows
 and Android platform folders. For other platforms, generate them:
@@ -70,8 +73,10 @@ and Android platform folders. For other platforms, generate them:
 cd app
 flutter create --platforms=macos,linux .
 flutter pub get
-flutter run -d windows      # or macos, linux, android
+flutter run -d windows
 ```
+
+Swap `windows` for `macos`, `linux` or `android` on those platforms.
 
 You do not need the backend to try the visualiser: the app ships with a demo
 riff and runs before anything has been processed.

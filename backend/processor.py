@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import os
 import shutil
 import statistics
 import subprocess
@@ -84,6 +85,20 @@ def use_utf8_output() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, OSError):
             pass
+
+
+def utf8_child_env() -> Dict[str, str]:
+    """Environment for a Python child process that prints non-ASCII paths.
+
+    ``reconfigure`` above only fixes *this* process. Demucs runs as its own
+    interpreter, and with its output piped to the app Windows hands it cp1252
+    again — so it died printing "Separated tracks will be stored in <path>"
+    the moment the song title held a character cp1252 lacks.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8:replace"
+    env["PYTHONUTF8"] = "1"
+    return env
 
 
 def log(message: str) -> None:
@@ -311,7 +326,7 @@ def separate(
         str(source),
     ]
     log(f"demucs: {model} on {device} (shifts={shifts}) — this is the slow part")
-    result = subprocess.run(command)
+    result = subprocess.run(command, env=utf8_child_env())
     if result.returncode != 0:
         fail(f"demucs exited with code {result.returncode}")
 
