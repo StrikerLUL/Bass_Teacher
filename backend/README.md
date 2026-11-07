@@ -27,6 +27,11 @@ pip install -r requirements.txt
 
 - **Demucs** pulls PyTorch (~2.5 GB with CUDA wheels). If you want a specific
   CUDA build, install torch *first* so pip does not resolve the CPU-only wheel.
+  Install **torch and torchaudio together, at the same version, below 2.9**:
+  a mismatched pair fails with `Could not load this library: libtorchaudio.pyd`,
+  and 2.9+ needs torchcodec to save audio, which Demucs does not use.
+  `processor.py` checks this before separating and prints the pip line that
+  fixes it.
 - **Basic Pitch** is installed with the `[onnx]` extra, which runs on
   onnxruntime instead of TensorFlow: ~600 MB smaller and faster on CPU for a
   network this size.

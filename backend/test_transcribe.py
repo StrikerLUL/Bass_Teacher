@@ -319,6 +319,40 @@ def test_a_band_narrower_than_a_bin_still_finds_the_fundamental():
     assert _harmonic_score(mags, freqs, e1) > 0.0
 
 
+# --------------------------------------------------------------------------- #
+# Environment check before Demucs
+# --------------------------------------------------------------------------- #
+
+def test_a_matching_torch_pair_passes():
+    from processor import torch_audio_fix
+
+    assert torch_audio_fix("2.5.1", "2.5.1") is None
+    assert torch_audio_fix("2.8.0+cu126", "2.8.0+cu126") is None
+
+
+def test_a_mismatched_torch_pair_is_caught():
+    """The pair that crashes on Windows with 'Could not load libtorchaudio.pyd'."""
+    from processor import torch_audio_fix
+
+    assert "do not match" in torch_audio_fix("2.7.1+cu126", "2.5.1+cu124")
+
+
+def test_torchaudio_too_new_for_demucs_is_caught():
+    from processor import torch_audio_fix
+
+    assert "too new" in torch_audio_fix("2.9.0", "2.9.0")
+
+
+def test_the_fix_keeps_the_cuda_flavour():
+    from processor import torch_audio_install_command
+
+    line = torch_audio_install_command("2.7.1+cu126")
+    assert '"torch==2.7.1" "torchaudio==2.7.1"' in line
+    assert "whl/cu126" in line
+    # Too new for Demucs: step back to the last pair that saves audio.
+    assert '"torch==2.8.0"' in torch_audio_install_command("2.10.0")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0
