@@ -159,6 +159,86 @@ def pick_device(requested: str) -> str:
     return "cpu"
 
 
+# Demucs 4.0.1 writes its stems with torchaudio.save. From 2.9 on, torchaudio
+# hands load/save to torchcodec, which Demucs does not know about — so the last
+# pair that works out of the box is 2.8.
+TORCHAUDIO_LAST_GOOD = (2, 8)
+
+
+def _base_version(version: str) -> Tuple[str, str]:
+    """``"2.5.1+cu124"`` -> ``("2.5.1", "cu124")``."""
+    base, _, local = version.partition("+")
+    return base, local
+
+
+def _major_minor(version: str) -> Tuple[int, ...]:
+    parts = []
+    for piece in _base_version(version)[0].split(".")[:2]:
+        digits = "".join(c for c in piece if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def torch_audio_fix(torch_version: Optional[str], torchaudio_version: Optional[str]) -> Optional[str]:
+    """What is wrong with this torch/torchaudio pair, or None if it looks fine.
+
+    torchaudio ships a compiled extension built against one exact torch
+    release. Pair it with any other and importing it dies with
+    ``OSError: Could not load this library: libtorchaudio.pyd`` — usually
+    because something upgraded torch on its own (installing torchcrepe, or a
+    CUDA wheel) and left torchaudio behind.
+    """
+    if torch_version is None:
+        return "torch is not installed"
+    if torchaudio_version is None:
+        return "torchaudio is not installed"
+    torch_base = _base_version(torch_version)[0]
+    audio_base = _base_version(torchaudio_version)[0]
+    if _major_minor(torchaudio_version) > TORCHAUDIO_LAST_GOOD:
+        return (f"torchaudio {torchaudio_version} is too new for Demucs "
+                f"(it needs torchcodec to save audio)")
+    if torch_base != audio_base:
+        return f"torch {torch_version} and torchaudio {torchaudio_version} do not match"
+    return None
+
+
+def torch_audio_install_command(torch_version: Optional[str]) -> str:
+    """A pip line that installs a matching torch + torchaudio pair."""
+    target = "2.8.0"
+    index = ""
+    if torch_version:
+        base, local = _base_version(torch_version)
+        if _major_minor(torch_version) <= TORCHAUDIO_LAST_GOOD:
+            target = base
+        if local:  # keep the CUDA (or CPU) flavour the user picked
+            index = f" --index-url https://download.pytorch.org/whl/{local}"
+    python = f'"{sys.executable}"' if " " in sys.executable else sys.executable
+    return (f'{python} -m pip install "torch=={target}" "torchaudio=={target}"'
+            f"{index}")
+
+
+def check_torchaudio() -> None:
+    """Fail early, with the fix, if Demucs would crash importing torchaudio."""
+    from importlib import metadata
+
+    def installed(name: str) -> Optional[str]:
+        try:
+            return metadata.version(name)
+        except metadata.PackageNotFoundError:
+            return None
+
+    torch_version = installed("torch")
+    problem = torch_audio_fix(torch_version, installed("torchaudio"))
+    if problem is None:
+        try:
+            import torchaudio  # noqa: F401
+        except Exception as error:  # OSError from the .pyd, ImportError, ...
+            problem = f"torchaudio fails to load ({type(error).__name__}: {error})"
+    if problem is not None:
+        fail(f"{problem}. Demucs cannot run until torch and torchaudio match.",
+             "Fix: " + torch_audio_install_command(torch_version))
+
+
 def _stem_receipt(source: Path, model: str, preview: Optional[float]) -> Dict[str, Any]:
     """Identity of the audio a set of stems was made from."""
     try:
@@ -214,6 +294,7 @@ def separate(
             "demucs is not installed.",
             "pip install demucs   (needs torch; see backend/requirements.txt)",
         )
+    check_torchaudio()
 
     work_dir = out_dir / "_demucs"
     if work_dir.exists():

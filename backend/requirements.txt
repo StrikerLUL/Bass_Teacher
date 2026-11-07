@@ -1,7 +1,15 @@
 # Stage 1 — stem separation.
 # Pulls PyTorch (~2.5 GB with the CUDA wheels). If you want a specific CUDA
 # build, install torch first so pip does not pick the CPU-only wheel:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu126
+#
+# torch and torchaudio must always be the *same* version: torchaudio's compiled
+# extension only loads against the torch it was built for (otherwise Demucs
+# dies with "Could not load this library: libtorchaudio.pyd"). And they must
+# stay below 2.9, where torchaudio.save needs torchcodec, which Demucs 4.0.1
+# does not use.
+torch>=2.1,<2.9
+torchaudio>=2.1,<2.9
 demucs>=4.0.1
 
 # Stage 2 — transcription, default engine.
